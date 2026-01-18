@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 
+# Node modules
+node_modules/
+**/node_modules/
+
 # Go build artifacts
 bin/
 *.exe
