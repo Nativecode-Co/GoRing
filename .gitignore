@@ -1,0 +1,23 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Go build artifacts
+bin/
+*.exe
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Debug & coverage
+*.prof
+coverage.out
+
+# Temporary
+tmp/
+*.log
