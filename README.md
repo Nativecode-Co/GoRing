@@ -1,6 +1,6 @@
 # Goring - WebSocket Signaling Server for Voice Calling
 
-A production-ready Golang WebSocket signaling server for voice calling with Redis-backed state management.
+A production-ready Golang WebSocket signaling server for voice calling with Redis-backed state management and WebRTC support.
 
 ## Features
 
@@ -10,6 +10,8 @@ A production-ready Golang WebSocket signaling server for voice calling with Redi
 - **Cross-instance messaging** - Redis pub/sub for horizontal scaling
 - **Race-condition safe** - Lua scripts for atomic state transitions
 - **Graceful shutdown** - Clean connection handling on SIGINT/SIGTERM
+- **Full WebRTC signaling** - SDP offer/answer and ICE candidate exchange
+- **Working example client** - React + TypeScript web client included
 
 ## Architecture
 
@@ -42,9 +44,48 @@ A production-ready Golang WebSocket signaling server for voice calling with Redi
 └──────────────────────────────────────────────────────┘
 ```
 
+## Project Structure
+
+```
+goring/
+├── cmd/server/            # Application entry point
+├── internal/
+│   ├── auth/             # JWT token validation
+│   ├── protocol/         # WebSocket message definitions
+│   ├── redis/            # Redis client and session management
+│   ├── signaling/        # Call logic and pub/sub
+│   └── ws/               # WebSocket hub and client handlers
+├── examples/
+│   └── web-client/       # React + TypeScript example client
+│       ├── src/
+│       │   ├── lib/SignalingClient.ts   # WebRTC/WebSocket client
+│       │   ├── components/CallUI.tsx     # Call interface component
+│       │   └── App.tsx                   # Main application
+│       └── package.json
+├── docker-compose.yml    # Docker orchestration
+├── Dockerfile           # Multi-stage build
+└── .env.example         # Configuration template
+```
+
 ## Quick Start
 
-### Docker (Recommended)
+### Option 1: Try the Example Client (Recommended for Testing)
+
+The fastest way to see Goring in action is to use the included React example client:
+
+```bash
+# Start server and Redis with Docker
+docker compose up -d
+
+# In a separate terminal, run the example web client
+cd examples/web-client
+npm install
+npm run dev
+```
+
+Open the URL shown (typically `http://localhost:5173`) in **two different browser tabs**. You can now make test calls between the tabs using the demo JWT tokens provided in the UI.
+
+### Option 2: Docker Only
 
 ```bash
 # Start server with Redis
@@ -62,7 +103,7 @@ docker compose down
 
 The server will be available at `ws://localhost:8080/ws?token=<JWT>`
 
-### Local Development
+### Option 3: Local Development
 
 **Prerequisites:** Go 1.21+, Redis 6+
 
@@ -76,13 +117,27 @@ export PORT="8080"
 go run ./cmd/server
 ```
 
-### Connect via WebSocket
+## Testing with JWT Tokens
+
+For development and testing, you can generate test JWT tokens:
+
+```go
+// The auth package includes a test token generator
+// In production, use your auth service to generate tokens
+
+// Example JWT payload structure:
+{
+  "hash": "user-123",        // User ID (required)
+  "name": "Alice",
+  "username": "alice",
+  "iat": 1768720767,
+  "exp": 1768732667          // Token expiration
+}
+```
+
+Connect via WebSocket using wscat or any WebSocket client:
 
 ```bash
-# Generate a test token (for development only)
-# In production, use your auth service to generate JWTs
-
-# Connect with wscat
 wscat -c "ws://localhost:8080/ws?token=<JWT>"
 ```
 
@@ -348,10 +403,59 @@ curl http://localhost:8080/health
 
 Returns `200 OK` if the server and Redis are healthy.
 
+## Example Client
+
+The project includes a fully functional React + TypeScript web client that demonstrates complete WebRTC integration.
+
+### Features of Example Client
+
+- Complete call lifecycle (initiate, ring, accept/reject, end)
+- Real-time WebRTC audio calling
+- Call duration timer
+- Connection status indicators
+- Error handling with user-friendly messages
+- Microphone permission handling
+
+### Running the Example
+
+```bash
+# Start the server
+docker compose up -d
+
+# Install and run the example client
+cd examples/web-client
+npm install
+npm run dev
+```
+
+Open two browser tabs with the provided URL to test calls between different users.
+
+### Example Client Architecture
+
+The example client consists of:
+
+- **[SignalingClient.ts](examples/web-client/src/lib/SignalingClient.ts)** - Core WebSocket and WebRTC integration
+  - Manages WebSocket connection to signaling server
+  - Handles WebRTC peer connection setup
+  - State machine for call lifecycle
+  - SDP offer/answer negotiation
+  - ICE candidate exchange
+
+- **[CallUI.tsx](examples/web-client/src/components/CallUI.tsx)** - React UI component
+  - Dynamic UI based on call state
+  - Incoming call notifications
+  - Active call timer
+  - Call controls
+
+- **[App.tsx](examples/web-client/src/App.tsx)** - Main application
+  - Connection management
+  - JWT token input
+  - Server URL configuration
+
 ## Development
 
 ```bash
-# Build
+# Build the Go server
 go build -o server ./cmd/server
 
 # Run with verbose logging
@@ -359,6 +463,10 @@ go build -o server ./cmd/server
 
 # Run tests
 go test ./...
+
+# Build example client for production
+cd examples/web-client
+npm run build
 ```
 
 ## Client Integration Guide
@@ -378,6 +486,8 @@ The server expects JWT tokens with a `hash` claim as the user ID:
   "exp": 1768732667
 }
 ```
+
+**Note:** A complete, working example client is available in [examples/web-client](examples/web-client). The code snippets below show the core integration pattern.
 
 ### JavaScript/TypeScript Example
 
@@ -660,6 +770,86 @@ class SignalingClient {
   }
 }
 ```
+
+## Backend Architecture
+
+### Components
+
+- **[cmd/server/main.go](cmd/server/main.go)** - Application entry point
+  - Initializes Redis, Hub, CallManager, and PubSub
+  - Sets up HTTP server with `/ws` and `/health` endpoints
+  - Handles graceful shutdown
+
+- **[internal/auth/jwt.go](internal/auth/jwt.go)** - JWT authentication
+  - Validates tokens using HMAC-SHA256
+  - Extracts user ID from `hash` claim
+  - Test token generation for development
+
+- **[internal/protocol/messages.go](internal/protocol/messages.go)** - Protocol definitions
+  - All WebSocket message types and structures
+  - Call states and error codes
+
+- **[internal/redis/](internal/redis/)** - Redis integration
+  - **client.go** - Redis client wrapper
+  - **session.go** - Session and state management with atomic operations
+
+- **[internal/signaling/](internal/signaling/)** - Call orchestration
+  - **call.go** - Call lifecycle management (start, accept, reject, end)
+  - **pubsub.go** - Cross-instance messaging for horizontal scaling
+
+- **[internal/ws/](internal/ws/)** - WebSocket handling
+  - **handler.go** - Hub for connection management and message routing
+  - **client.go** - Individual WebSocket connection handling
+
+### Key Design Patterns
+
+- **Stateless servers** - All state stored in Redis for horizontal scalability
+- **Atomic operations** - Lua scripts prevent race conditions
+- **Pub/Sub architecture** - Cross-instance messaging via Redis channels
+- **Connection deduplication** - Redis SET NX ensures single connection per user
+- **Automatic cleanup** - TTLs and disconnect handlers prevent orphaned sessions
+- **Heartbeat mechanism** - Periodic Redis TTL refresh keeps sessions alive
+
+## Technologies
+
+### Backend
+- **Go 1.21+** with standard library HTTP server
+- **gorilla/websocket** for WebSocket connections
+- **redis/go-redis/v9** for state management
+- **golang-jwt/jwt/v5** for authentication
+- **rs/zerolog** for structured logging
+
+### Frontend (Example Client)
+- **React 18** with TypeScript 5
+- **Vite 5** for development and building
+- **Native WebRTC API** for peer-to-peer media
+- **Native WebSocket API** for signaling
+
+### Infrastructure
+- **Redis 7** for state and pub/sub
+- **Docker** and **Docker Compose** for deployment
+
+## Production Considerations
+
+### Security
+- Always use secure JWT secrets in production
+- Consider rate limiting on WebSocket connections
+- Use WSS (WebSocket Secure) in production
+- Implement user authentication in your auth service
+- Validate and sanitize all client inputs
+
+### Scaling
+- The server is stateless and can scale horizontally
+- Use a load balancer (e.g., nginx, HAProxy) in front of multiple instances
+- Redis can be clustered for high availability
+- Monitor Redis memory usage and set appropriate TTLs
+
+### Monitoring
+- Health check endpoint at `/health` for load balancer checks
+- Structured JSON logs for aggregation (ELK, Datadog, etc.)
+- Monitor WebSocket connection count
+- Track call success/failure rates
+- Monitor Redis latency and memory
 
 ## License
 
