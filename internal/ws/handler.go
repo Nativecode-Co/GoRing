@@ -242,7 +242,7 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate JWT
-	userID, err := auth.ValidateToken(token, h.jwtSecret)
+	userInfo, err := auth.ValidateToken(token, h.jwtSecret)
 	if err != nil {
 		h.logger.Warn().
 			Err(err).
@@ -252,10 +252,10 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try to acquire WebSocket slot in Redis (ensures single connection per user)
-	acquired, err := h.sessions.AcquireWebSocket(r.Context(), userID, h.serverID)
+	acquired, err := h.sessions.AcquireWebSocket(r.Context(), userInfo.UserID, h.serverID)
 	if err != nil {
 		h.logger.Error().
-			Str("user_id", userID).
+			Str("user_id", userInfo.UserID).
 			Err(err).
 			Msg("WebSocket upgrade: Redis error")
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -263,7 +263,7 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 	}
 	if !acquired {
 		h.logger.Warn().
-			Str("user_id", userID).
+			Str("user_id", userInfo.UserID).
 			Msg("WebSocket upgrade: user already connected")
 		http.Error(w, "User already connected", http.StatusConflict)
 		return
@@ -273,16 +273,16 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		h.logger.Error().
-			Str("user_id", userID).
+			Str("user_id", userInfo.UserID).
 			Err(err).
 			Msg("WebSocket upgrade: upgrade failed")
 		// Release the slot we acquired
-		_ = h.sessions.ReleaseWebSocket(r.Context(), userID)
+		_ = h.sessions.ReleaseWebSocket(r.Context(), userInfo.UserID)
 		return
 	}
 
 	// Create client
-	client := NewClient(conn, userID, h.logger)
+	client := NewClient(conn, userInfo, h.logger)
 
 	// Register client
 	h.register <- client
@@ -291,7 +291,7 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 	go h.runClient(client)
 
 	h.logger.Info().
-		Str("user_id", userID).
+		Str("user_id", userInfo.UserID).
 		Str("remote_addr", r.RemoteAddr).
 		Msg("WebSocket connection established")
 }
@@ -396,7 +396,8 @@ func (h *Hub) handleCallStart(ctx context.Context, client *Client, msg *protocol
 		return
 	}
 
-	_, err := h.callManager.StartCall(ctx, client.userID, payload.CalleeID)
+	callerInfo := toProtocolUserInfo(client.UserInfo())
+	_, err := h.callManager.StartCall(ctx, client.userID, payload.CalleeID, callerInfo)
 	if err != nil {
 		switch err {
 		case signaling.ErrUserOffline:
@@ -427,7 +428,8 @@ func (h *Hub) handleCallAccept(ctx context.Context, client *Client, msg *protoco
 		return
 	}
 
-	err := h.callManager.AcceptCall(ctx, client.userID, payload.SessionID)
+	calleeInfo := toProtocolUserInfo(client.UserInfo())
+	err := h.callManager.AcceptCall(ctx, client.userID, payload.SessionID, calleeInfo)
 	if err != nil {
 		switch err {
 		case signaling.ErrSessionNotFound:
@@ -461,7 +463,8 @@ func (h *Hub) handleCallReject(ctx context.Context, client *Client, msg *protoco
 		return
 	}
 
-	err := h.callManager.RejectCall(ctx, client.userID, payload.SessionID)
+	calleeInfo := toProtocolUserInfo(client.UserInfo())
+	err := h.callManager.RejectCall(ctx, client.userID, payload.SessionID, calleeInfo)
 	if err != nil {
 		switch err {
 		case signaling.ErrSessionNotFound:
@@ -495,7 +498,8 @@ func (h *Hub) handleCallEnd(ctx context.Context, client *Client, msg *protocol.M
 		return
 	}
 
-	err := h.callManager.EndCall(ctx, client.userID, payload.SessionID)
+	userInfo := toProtocolUserInfo(client.UserInfo())
+	err := h.callManager.EndCall(ctx, client.userID, payload.SessionID, userInfo)
 	if err != nil {
 		switch err {
 		case signaling.ErrSessionNotFound:
@@ -607,6 +611,19 @@ func (h *Hub) sendError(client *Client, code, message string) {
 		return
 	}
 	client.Send(data)
+}
+
+// toProtocolUserInfo converts auth.UserInfo to protocol.UserInfo
+func toProtocolUserInfo(info *auth.UserInfo) *protocol.UserInfo {
+	if info == nil {
+		return nil
+	}
+	return &protocol.UserInfo{
+		UserID:       info.UserID,
+		Name:         info.Name,
+		Username:     info.Username,
+		ImageProfile: info.ImageProfile,
+	}
 }
 
 // Stop stops the hub

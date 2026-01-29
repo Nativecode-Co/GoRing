@@ -50,7 +50,7 @@ func (m *CallManager) SetSender(sender MessageSender) {
 
 // StartCall initiates a new call from caller to callee.
 // Creates a new session in Redis and sends ring notification to callee.
-func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string) (*redis.CallSession, error) {
+func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, callerInfo *protocol.UserInfo) (*redis.CallSession, error) {
 	m.logger.Info().
 		Str("caller_id", callerID).
 		Str("callee_id", calleeID).
@@ -92,8 +92,9 @@ func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string) 
 
 	// Send ring notification to callee
 	ringMsg := protocol.MustNewMessage(protocol.TypeCallRing, protocol.CallRingPayload{
-		SessionID: session.SessionID,
-		CallerID:  callerID,
+		SessionID:  session.SessionID,
+		CallerID:   callerID,
+		CallerInfo: callerInfo,
 	})
 
 	if m.sender != nil {
@@ -118,7 +119,7 @@ func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string) 
 
 // AcceptCall accepts an incoming call.
 // Validates the callee owns the session and atomically transitions state.
-func (m *CallManager) AcceptCall(ctx context.Context, userID, sessionID string) error {
+func (m *CallManager) AcceptCall(ctx context.Context, userID, sessionID string, calleeInfo *protocol.UserInfo) error {
 	m.logger.Info().
 		Str("user_id", userID).
 		Str("session_id", sessionID).
@@ -157,7 +158,8 @@ func (m *CallManager) AcceptCall(ctx context.Context, userID, sessionID string) 
 
 	// Notify caller that call was accepted
 	acceptedMsg := protocol.MustNewMessage(protocol.TypeCallAccepted, protocol.CallAcceptedPayload{
-		SessionID: sessionID,
+		SessionID:  sessionID,
+		CalleeInfo: calleeInfo,
 	})
 
 	if m.sender != nil {
@@ -181,7 +183,7 @@ func (m *CallManager) AcceptCall(ctx context.Context, userID, sessionID string) 
 
 // RejectCall rejects an incoming call.
 // Validates the callee owns the session and cleans up.
-func (m *CallManager) RejectCall(ctx context.Context, userID, sessionID string) error {
+func (m *CallManager) RejectCall(ctx context.Context, userID, sessionID string, calleeInfo *protocol.UserInfo) error {
 	m.logger.Info().
 		Str("user_id", userID).
 		Str("session_id", sessionID).
@@ -220,7 +222,8 @@ func (m *CallManager) RejectCall(ctx context.Context, userID, sessionID string) 
 
 	// Notify caller
 	rejectedMsg := protocol.MustNewMessage(protocol.TypeCallRejected, protocol.CallRejectedPayload{
-		SessionID: sessionID,
+		SessionID:  sessionID,
+		CalleeInfo: calleeInfo,
 	})
 
 	if m.sender != nil {
@@ -252,7 +255,7 @@ func (m *CallManager) RejectCall(ctx context.Context, userID, sessionID string) 
 
 // EndCall ends an active call.
 // Either party can end the call at any time.
-func (m *CallManager) EndCall(ctx context.Context, userID, sessionID string) error {
+func (m *CallManager) EndCall(ctx context.Context, userID, sessionID string, userInfo *protocol.UserInfo) error {
 	m.logger.Info().
 		Str("user_id", userID).
 		Str("session_id", sessionID).
@@ -295,6 +298,7 @@ func (m *CallManager) EndCall(ctx context.Context, userID, sessionID string) err
 	endedMsg := protocol.MustNewMessage(protocol.TypeCallEnded, protocol.CallEndedPayload{
 		SessionID: sessionID,
 		Reason:    "ended_by_user",
+		PeerInfo:  userInfo,
 	})
 
 	if m.sender != nil {

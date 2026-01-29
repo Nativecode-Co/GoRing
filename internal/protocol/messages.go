@@ -40,6 +40,14 @@ type Message struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
+// UserInfo contains user profile data for event payloads
+type UserInfo struct {
+	UserID       string `json:"user_id"`
+	Name         string `json:"name,omitempty"`
+	Username     string `json:"username,omitempty"`
+	ImageProfile string `json:"image_profile,omitempty"`
+}
+
 // CallStartPayload is sent by caller to initiate a call
 type CallStartPayload struct {
 	CalleeID string `json:"callee_id"`
@@ -47,8 +55,9 @@ type CallStartPayload struct {
 
 // CallRingPayload is sent to callee when incoming call
 type CallRingPayload struct {
-	SessionID string `json:"session_id"`
-	CallerID  string `json:"caller_id"`
+	SessionID  string    `json:"session_id"`
+	CallerID   string    `json:"caller_id"`
+	CallerInfo *UserInfo `json:"caller_info,omitempty"`
 }
 
 // CallSessionPayload is used for accept/reject/end operations
@@ -58,18 +67,21 @@ type CallSessionPayload struct {
 
 // CallAcceptedPayload is sent to caller when call is accepted
 type CallAcceptedPayload struct {
-	SessionID string `json:"session_id"`
+	SessionID  string    `json:"session_id"`
+	CalleeInfo *UserInfo `json:"callee_info,omitempty"`
 }
 
 // CallRejectedPayload is sent to caller when call is rejected
 type CallRejectedPayload struct {
-	SessionID string `json:"session_id"`
+	SessionID  string    `json:"session_id"`
+	CalleeInfo *UserInfo `json:"callee_info,omitempty"`
 }
 
 // CallEndedPayload is sent to both parties when call ends
 type CallEndedPayload struct {
-	SessionID string `json:"session_id"`
-	Reason    string `json:"reason"`
+	SessionID string    `json:"session_id"`
+	Reason    string    `json:"reason"`
+	PeerInfo  *UserInfo `json:"peer_info,omitempty"`
 }
 
 // WebRTCOfferPayload is sent by caller to initiate WebRTC connection

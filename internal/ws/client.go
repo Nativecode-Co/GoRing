@@ -7,6 +7,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
+
+	"github.com/abdulkhalek/goring/internal/auth"
 )
 
 const (
@@ -31,24 +33,26 @@ type MessageHandler func(client *Client, message []byte)
 
 // Client represents a WebSocket client connection
 type Client struct {
-	conn   *websocket.Conn
-	userID string
-	send   chan []byte
-	done   chan struct{}
-	once   sync.Once
-	logger zerolog.Logger
+	conn     *websocket.Conn
+	userID   string
+	userInfo *auth.UserInfo
+	send     chan []byte
+	done     chan struct{}
+	once     sync.Once
+	logger   zerolog.Logger
 }
 
 // NewClient creates a new WebSocket client
-func NewClient(conn *websocket.Conn, userID string, logger zerolog.Logger) *Client {
+func NewClient(conn *websocket.Conn, userInfo *auth.UserInfo, logger zerolog.Logger) *Client {
 	return &Client{
-		conn:   conn,
-		userID: userID,
-		send:   make(chan []byte, sendBufferSize),
-		done:   make(chan struct{}),
+		conn:     conn,
+		userID:   userInfo.UserID,
+		userInfo: userInfo,
+		send:     make(chan []byte, sendBufferSize),
+		done:     make(chan struct{}),
 		logger: logger.With().
 			Str("component", "ws_client").
-			Str("user_id", userID).
+			Str("user_id", userInfo.UserID).
 			Logger(),
 	}
 }
@@ -56,6 +60,11 @@ func NewClient(conn *websocket.Conn, userID string, logger zerolog.Logger) *Clie
 // UserID returns the client's user ID
 func (c *Client) UserID() string {
 	return c.userID
+}
+
+// UserInfo returns the client's user info
+func (c *Client) UserInfo() *auth.UserInfo {
+	return c.userInfo
 }
 
 // Send queues a message to be sent to the client.

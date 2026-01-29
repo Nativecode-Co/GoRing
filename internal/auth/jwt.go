@@ -15,19 +15,28 @@ var (
 
 // Claims represents the JWT claims we expect
 type Claims struct {
-	Hash     string `json:"hash"`
-	Name     string `json:"name,omitempty"`
-	Username string `json:"username,omitempty"`
-	UserType string `json:"user_type,omitempty"`
-	IsAdmin  string `json:"is_admin,omitempty"`
+	Hash         string `json:"hash"`
+	Name         string `json:"name,omitempty"`
+	Username     string `json:"username,omitempty"`
+	ImageProfile string `json:"image_profile,omitempty"`
+	UserType     string `json:"user_type,omitempty"`
+	IsAdmin      string `json:"is_admin,omitempty"`
 	jwt.RegisteredClaims
 }
 
-// ValidateToken validates a JWT token and extracts the user ID from the 'hash' claim.
-// Returns the user ID on success, or an error describing the failure.
-func ValidateToken(tokenString, secret string) (string, error) {
+// UserInfo contains user profile data extracted from JWT
+type UserInfo struct {
+	UserID       string `json:"user_id"`
+	Name         string `json:"name,omitempty"`
+	Username     string `json:"username,omitempty"`
+	ImageProfile string `json:"image_profile,omitempty"`
+}
+
+// ValidateToken validates a JWT token and extracts user info from claims.
+// Returns UserInfo on success, or an error describing the failure.
+func ValidateToken(tokenString, secret string) (*UserInfo, error) {
 	if tokenString == "" {
-		return "", ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (any, error) {
@@ -40,27 +49,32 @@ func ValidateToken(tokenString, secret string) (string, error) {
 
 	if err != nil {
 		if errors.Is(err, jwt.ErrTokenExpired) {
-			return "", ErrExpiredToken
+			return nil, ErrExpiredToken
 		}
-		return "", fmt.Errorf("%w: %v", ErrInvalidToken, err)
+		return nil, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
 
 	if !token.Valid {
-		return "", ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	claims, ok := token.Claims.(*Claims)
 	if !ok {
-		return "", ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 
 	// Extract user_id from 'hash' claim
 	userID := claims.Hash
 	if userID == "" {
-		return "", ErrMissingClaim
+		return nil, ErrMissingClaim
 	}
 
-	return userID, nil
+	return &UserInfo{
+		UserID:       userID,
+		Name:         claims.Name,
+		Username:     claims.Username,
+		ImageProfile: claims.ImageProfile,
+	}, nil
 }
 
 // GenerateToken creates a JWT token for testing purposes.
