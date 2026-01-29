@@ -1,15 +1,22 @@
 import { useState, useRef, useEffect } from 'react';
-import { SignalingClient, CallState } from '../lib/SignalingClient';
+import { SignalingClient, CallState, UserInfo } from '../lib/SignalingClient';
 import './CallUI.css';
 
 interface CallUIProps {
   client: SignalingClient;
 }
 
+interface IncomingCall {
+  callerId: string;
+  sessionId: string;
+  callerInfo?: UserInfo;
+}
+
 export function CallUI({ client }: CallUIProps) {
   const [state, setState] = useState<CallState>('idle');
   const [calleeId, setCalleeId] = useState('');
-  const [incomingCall, setIncomingCall] = useState<{ callerId: string; sessionId: string } | null>(null);
+  const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
+  const [peerInfo, setPeerInfo] = useState<UserInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
@@ -19,13 +26,21 @@ export function CallUI({ client }: CallUIProps) {
         setState(newState);
         if (newState === 'idle') {
           setIncomingCall(null);
+          setPeerInfo(null);
         }
       },
-      onIncomingCall: (callerId, sessionId) => {
-        setIncomingCall({ callerId, sessionId });
+      onIncomingCall: (callerId, sessionId, callerInfo) => {
+        setIncomingCall({ callerId, sessionId, callerInfo });
       },
-      onCallEnded: (reason) => {
-        setError(`Call ended: ${reason}`);
+      onCallAccepted: (_sessionId, calleeInfo) => {
+        if (calleeInfo) {
+          setPeerInfo(calleeInfo);
+        }
+      },
+      onCallEnded: (reason, endedByInfo) => {
+        const peerName = endedByInfo?.name || endedByInfo?.username || '';
+        const message = peerName ? `Call ended by ${peerName}: ${reason}` : `Call ended: ${reason}`;
+        setError(message);
         setTimeout(() => setError(null), 3000);
       },
       onRemoteStream: (stream) => {
@@ -54,6 +69,10 @@ export function CallUI({ client }: CallUIProps) {
 
   const handleAccept = () => {
     if (incomingCall) {
+      // Set peer info from the incoming call's caller info
+      if (incomingCall.callerInfo) {
+        setPeerInfo(incomingCall.callerInfo);
+      }
       client.acceptCall(incomingCall.sessionId);
       setIncomingCall(null);
     }
@@ -84,7 +103,24 @@ export function CallUI({ client }: CallUIProps) {
       {/* Incoming call notification */}
       {incomingCall && (
         <div className="incoming-call">
-          <p>Incoming call from: <strong>{incomingCall.callerId}</strong></p>
+          {incomingCall.callerInfo?.image_profile && (
+            <img
+              src={incomingCall.callerInfo.image_profile}
+              alt="Caller"
+              className="caller-avatar"
+            />
+          )}
+          <p>
+            Incoming call from:{' '}
+            <strong>
+              {incomingCall.callerInfo?.name ||
+               incomingCall.callerInfo?.username ||
+               incomingCall.callerId}
+            </strong>
+            {incomingCall.callerInfo?.username && incomingCall.callerInfo?.name && (
+              <span className="caller-username">@{incomingCall.callerInfo.username}</span>
+            )}
+          </p>
           <div className="call-actions">
             <button className="btn accept" onClick={handleAccept}>
               Accept
@@ -125,7 +161,18 @@ export function CallUI({ client }: CallUIProps) {
       {/* Connected state */}
       {state === 'connected' && (
         <div className="connected-state">
-          <p>Call in progress</p>
+          {peerInfo?.image_profile && (
+            <img
+              src={peerInfo.image_profile}
+              alt="Peer"
+              className="peer-avatar"
+            />
+          )}
+          <p>
+            {peerInfo?.name || peerInfo?.username
+              ? `Call with ${peerInfo.name || peerInfo.username}`
+              : 'Call in progress'}
+          </p>
           <div className="call-timer">
             <CallTimer />
           </div>

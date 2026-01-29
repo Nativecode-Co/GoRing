@@ -70,6 +70,25 @@
   color: #1e40af;
 }
 
+.caller-avatar,
+.peer-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 0.75rem;
+  border: 3px solid #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.caller-username {
+  display: block;
+  font-size: 0.875rem;
+  color: #6b7280;
+  font-weight: normal;
+  margin-top: 0.25rem;
+}
+
 .call-actions {
   display: flex;
   gap: 0.5rem;

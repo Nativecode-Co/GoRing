@@ -1,9 +1,18 @@
 export type CallState = 'idle' | 'calling' | 'ringing' | 'connected';
 
+export interface UserInfo {
+  user_id: string;
+  name?: string;
+  username?: string;
+  image_profile?: string;
+}
+
 export interface SignalingEvents {
   onStateChange?: (state: CallState) => void;
-  onIncomingCall?: (callerId: string, sessionId: string) => void;
-  onCallEnded?: (reason: string) => void;
+  onIncomingCall?: (callerId: string, sessionId: string, callerInfo?: UserInfo) => void;
+  onCallAccepted?: (sessionId: string, calleeInfo?: UserInfo) => void;
+  onCallRejected?: (sessionId: string, calleeInfo?: UserInfo) => void;
+  onCallEnded?: (reason: string, peerInfo?: UserInfo) => void;
   onRemoteStream?: (stream: MediaStream) => void;
   onError?: (code: string, message: string) => void;
   onConnected?: () => void;
@@ -82,20 +91,29 @@ export class SignalingClient {
         this.setState('ringing');
         this.events.onIncomingCall?.(
           msg.payload.caller_id as string,
-          msg.payload.session_id as string
+          msg.payload.session_id as string,
+          msg.payload.caller_info as UserInfo | undefined
         );
         break;
 
       case 'call.accepted':
         this.sessionId = msg.payload.session_id as string;
         this.setState('connected');
+        this.events.onCallAccepted?.(
+          msg.payload.session_id as string,
+          msg.payload.callee_info as UserInfo | undefined
+        );
         this.startWebRTC(true);
         break;
 
       case 'call.rejected':
         this.setState('idle');
         this.sessionId = null;
-        this.events.onCallEnded?.('rejected');
+        this.events.onCallRejected?.(
+          msg.payload.session_id as string,
+          msg.payload.callee_info as UserInfo | undefined
+        );
+        this.events.onCallEnded?.('rejected', msg.payload.callee_info as UserInfo | undefined);
         break;
 
       case 'webrtc.offer':
@@ -121,7 +139,10 @@ export class SignalingClient {
 
       case 'call.ended':
         this.cleanup();
-        this.events.onCallEnded?.(msg.payload.reason as string);
+        this.events.onCallEnded?.(
+          msg.payload.reason as string,
+          msg.payload.peer_info as UserInfo | undefined
+        );
         break;
 
       case 'error':
