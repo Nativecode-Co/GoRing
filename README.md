@@ -7,6 +7,7 @@ A production-ready Golang WebSocket signaling server for voice calling with Redi
 - **Single WebSocket per user** - Enforced via Redis with atomic SET NX
 - **Redis as single source of truth** - No in-memory session state
 - **JWT authentication** - Validated during WebSocket upgrade
+- **User profile info** - Name, username, and profile image propagated in call events
 - **Cross-instance messaging** - Redis pub/sub for horizontal scaling
 - **Race-condition safe** - Lua scripts for atomic state transitions
 - **Graceful shutdown** - Clean connection handling on SIGINT/SIGTERM
@@ -127,11 +128,12 @@ For development and testing, you can generate test JWT tokens:
 
 // Example JWT payload structure:
 {
-  "hash": "user-123",        // User ID (required)
-  "name": "Alice",
-  "username": "alice",
+  "hash": "user-123",              // User ID (required)
+  "name": "Alice",                 // Display name (optional)
+  "username": "alice",             // Username (optional)
+  "image_profile": "https://...",  // Profile image URL (optional)
   "iat": 1768720767,
-  "exp": 1768732667          // Token expiration
+  "exp": 1768732667                // Token expiration
 }
 ```
 
@@ -184,12 +186,14 @@ Caller                    Server                    Callee
    │──call.start────────────▶│                         │
    │  {callee_id: "userB"}   │                         │
    │                         │──call.ring─────────────▶│
-   │                         │  {session_id, caller_id}│
+   │                         │  {session_id, caller_id,│
+   │                         │   caller_info}          │
    │                         │                         │
    │                         │◀────────call.accept─────│
    │                         │  {session_id}           │
    │◀───call.accepted────────│                         │
-   │  {session_id}           │                         │
+   │  {session_id,           │                         │
+   │   callee_info}          │                         │
    │                         │                         │
    │  ─────────── WebRTC Signaling Phase ───────────  │
    │                         │                         │
@@ -300,7 +304,13 @@ These messages are forwarded to the peer. Only valid after call is accepted.
   "type": "call.ring",
   "payload": {
     "session_id": "550e8400-e29b-41d4-a716-446655440000",
-    "caller_id": "user-123"
+    "caller_id": "user-123",
+    "caller_info": {
+      "user_id": "user-123",
+      "name": "Alice",
+      "username": "alice",
+      "image_profile": "https://example.com/alice.jpg"
+    }
   }
 }
 ```
@@ -310,7 +320,13 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 {
   "type": "call.accepted",
   "payload": {
-    "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "callee_info": {
+      "user_id": "user-456",
+      "name": "Bob",
+      "username": "bob",
+      "image_profile": "https://example.com/bob.jpg"
+    }
   }
 }
 ```
@@ -320,7 +336,13 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 {
   "type": "call.rejected",
   "payload": {
-    "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "callee_info": {
+      "user_id": "user-456",
+      "name": "Bob",
+      "username": "bob",
+      "image_profile": "https://example.com/bob.jpg"
+    }
   }
 }
 ```
@@ -331,7 +353,13 @@ These messages are forwarded to the peer. Only valid after call is accepted.
   "type": "call.ended",
   "payload": {
     "session_id": "550e8400-e29b-41d4-a716-446655440000",
-    "reason": "ended_by_user"
+    "reason": "ended_by_user",
+    "peer_info": {
+      "user_id": "user-456",
+      "name": "Bob",
+      "username": "bob",
+      "image_profile": "https://example.com/bob.jpg"
+    }
   }
 }
 ```
@@ -411,6 +439,7 @@ The project includes a fully functional React + TypeScript web client that demon
 
 - Complete call lifecycle (initiate, ring, accept/reject, end)
 - Real-time WebRTC audio calling
+- User profile display (name, username, avatar) for callers and peers
 - Call duration timer
 - Connection status indicators
 - Error handling with user-friendly messages
@@ -440,10 +469,12 @@ The example client consists of:
   - State machine for call lifecycle
   - SDP offer/answer negotiation
   - ICE candidate exchange
+  - `UserInfo` interface for profile data in events
 
 - **[CallUI.tsx](examples/web-client/src/components/CallUI.tsx)** - React UI component
   - Dynamic UI based on call state
-  - Incoming call notifications
+  - Incoming call notifications with caller profile
+  - Active call display with peer avatar and name
   - Active call timer
   - Call controls
 
@@ -473,13 +504,14 @@ npm run build
 
 ### JWT Token Format
 
-The server expects JWT tokens with a `hash` claim as the user ID:
+The server expects JWT tokens with a `hash` claim as the user ID. Profile fields (`name`, `username`, `image_profile`) are extracted and included in call events:
 
 ```json
 {
   "hash": "6217138344386500",
   "name": "User Name",
   "username": "username",
+  "image_profile": "https://example.com/avatar.jpg",
   "user_type": "16587740479514765",
   "is_admin": "0",
   "iat": 1768720767,
@@ -508,13 +540,16 @@ class SignalingClient {
     switch (msg.type) {
       case 'call.ring':
         // Incoming call - show UI to accept/reject
+        // caller_info contains: user_id, name, username, image_profile
         this.sessionId = msg.payload.session_id;
-        this.onIncomingCall?.(msg.payload.caller_id, msg.payload.session_id);
+        this.onIncomingCall?.(msg.payload.caller_id, msg.payload.session_id, msg.payload.caller_info);
         break;
 
       case 'call.accepted':
         // Call accepted - start WebRTC as caller
+        // callee_info contains: user_id, name, username, image_profile
         this.sessionId = msg.payload.session_id;
+        this.onCallAccepted?.(msg.payload.callee_info);
         this.startWebRTC(true);
         break;
 
@@ -536,8 +571,9 @@ class SignalingClient {
         break;
 
       case 'call.ended':
+        // peer_info contains info about the user who ended the call
         this.cleanup();
-        this.onCallEnded?.(msg.payload.reason);
+        this.onCallEnded?.(msg.payload.reason, msg.payload.peer_info);
         break;
 
       case 'error':
@@ -627,21 +663,38 @@ class SignalingClient {
     this.sessionId = null;
   }
 
-  // Event callbacks
-  onIncomingCall?: (callerId: string, sessionId: string) => void;
-  onCallEnded?: (reason: string) => void;
+  // Event callbacks - user info includes: user_id, name, username, image_profile
+  onIncomingCall?: (callerId: string, sessionId: string, callerInfo?: UserInfo) => void;
+  onCallAccepted?: (calleeInfo?: UserInfo) => void;
+  onCallEnded?: (reason: string, peerInfo?: UserInfo) => void;
   onRemoteStream?: (stream: MediaStream) => void;
   onError?: (code: string, message: string) => void;
 }
 
+interface UserInfo {
+  user_id: string;
+  name?: string;
+  username?: string;
+  image_profile?: string;
+}
+
 // Usage
 const client = new SignalingClient('ws://localhost:8080', 'your-jwt-token');
-client.onIncomingCall = (callerId, sessionId) => {
-  if (confirm(`Incoming call from ${callerId}`)) {
+client.onIncomingCall = (callerId, sessionId, callerInfo) => {
+  // Display caller's name and profile image if available
+  const callerName = callerInfo?.name || callerInfo?.username || callerId;
+  if (confirm(`Incoming call from ${callerName}`)) {
     client.acceptCall(sessionId);
   } else {
     client.rejectCall(sessionId);
   }
+};
+client.onCallAccepted = (calleeInfo) => {
+  // Display callee's profile info when call is accepted
+  console.log(`Call accepted by ${calleeInfo?.name || calleeInfo?.username}`);
+};
+client.onCallEnded = (reason, peerInfo) => {
+  console.log(`Call ended: ${reason} by ${peerInfo?.name || 'unknown'}`);
 };
 client.onRemoteStream = (stream) => {
   document.querySelector('audio')!.srcObject = stream;
@@ -783,11 +836,13 @@ class SignalingClient {
 - **[internal/auth/jwt.go](internal/auth/jwt.go)** - JWT authentication
   - Validates tokens using HMAC-SHA256
   - Extracts user ID from `hash` claim
-  - Test token generation for development
+  - Extracts user profile info (`name`, `username`, `image_profile`) from claims
+  - Test token generation for development (with `GenerateTokenWithInfo`)
 
 - **[internal/protocol/messages.go](internal/protocol/messages.go)** - Protocol definitions
   - All WebSocket message types and structures
   - Call states and error codes
+  - `UserInfo` struct for profile data in call events
 
 - **[internal/redis/](internal/redis/)** - Redis integration
   - **client.go** - Redis client wrapper
