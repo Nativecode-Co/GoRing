@@ -19,11 +19,15 @@ const (
 	TypeWebRTCICE    = "webrtc.ice"
 
 	// Server -> Client
-	TypeCallRing     = "call.ring"
+	TypeCallRinging  = "call.ringing" // Sent to caller when call starts
+	TypeCallRing     = "call.ring"    // Sent to callee for incoming call
 	TypeCallAccepted = "call.accepted"
 	TypeCallRejected = "call.rejected"
 	TypeCallEnded    = "call.ended"
 	TypeError        = "error"
+
+	// Internal (Server -> Server via pub/sub)
+	TypeDisconnect = "internal.disconnect"
 )
 
 // Call states stored in Redis
@@ -58,6 +62,12 @@ type CallRingPayload struct {
 	SessionID  string    `json:"session_id"`
 	CallerID   string    `json:"caller_id"`
 	CallerInfo *UserInfo `json:"caller_info,omitempty"`
+}
+
+// CallRingingPayload is sent to caller when call starts ringing
+type CallRingingPayload struct {
+	SessionID string `json:"session_id"`
+	CalleeID  string `json:"callee_id"`
 }
 
 // CallSessionPayload is used for accept/reject/end operations
@@ -108,6 +118,11 @@ type WebRTCICEPayload struct {
 type ErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// DisconnectPayload is sent internally to kick a user's existing connection
+type DisconnectPayload struct {
+	Reason string `json:"reason"`
 }
 
 // Error codes

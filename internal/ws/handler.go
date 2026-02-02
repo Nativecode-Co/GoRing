@@ -188,6 +188,23 @@ func (h *Hub) handleUnregister(client *Client) {
 
 // handlePubSubMessage processes messages received via Redis pub/sub
 func (h *Hub) handlePubSubMessage(userID string, message []byte) {
+	// Check if this is an internal disconnect message
+	msg, err := protocol.ParseMessage(message)
+	if err == nil && msg.Type == protocol.TypeDisconnect {
+		h.logger.Info().
+			Str("user_id", userID).
+			Msg("Received disconnect message via pub/sub")
+
+		h.mu.RLock()
+		client, ok := h.clients[userID]
+		h.mu.RUnlock()
+
+		if ok {
+			client.Close()
+		}
+		return
+	}
+
 	h.mu.RLock()
 	client, ok := h.clients[userID]
 	h.mu.RUnlock()
@@ -261,12 +278,27 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
+
 	if !acquired {
-		h.logger.Warn().
-			Str("user_id", userInfo.UserID).
-			Msg("WebSocket upgrade: user already connected")
-		http.Error(w, "User already connected", http.StatusConflict)
-		return
+		// User already has a connection - kick existing and take over
+		if err := h.kickExistingConnection(r.Context(), userInfo.UserID); err != nil {
+			h.logger.Error().
+				Str("user_id", userInfo.UserID).
+				Err(err).
+				Msg("WebSocket upgrade: failed to kick existing connection")
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		// Force acquire the slot
+		if err := h.sessions.ForceAcquireWebSocket(r.Context(), userInfo.UserID, h.serverID); err != nil {
+			h.logger.Error().
+				Str("user_id", userInfo.UserID).
+				Err(err).
+				Msg("WebSocket upgrade: failed to force acquire slot")
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Upgrade connection
@@ -294,6 +326,56 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 		Str("user_id", userInfo.UserID).
 		Str("remote_addr", r.RemoteAddr).
 		Msg("WebSocket connection established")
+}
+
+// kickExistingConnection disconnects an existing user connection.
+// If the user is connected to this server, closes directly.
+// If connected to another server, sends disconnect message via pub/sub.
+func (h *Hub) kickExistingConnection(ctx context.Context, userID string) error {
+	// Check which server owns the connection
+	existingServer, err := h.sessions.GetWebSocketServer(ctx, userID)
+	if err != nil {
+		return err
+	}
+
+	if existingServer == "" {
+		// No existing connection, nothing to kick
+		return nil
+	}
+
+	h.logger.Info().
+		Str("user_id", userID).
+		Str("existing_server", existingServer).
+		Str("this_server", h.serverID).
+		Msg("Kicking existing connection")
+
+	if existingServer == h.serverID {
+		// User is connected to this server - close directly
+		h.mu.RLock()
+		client, ok := h.clients[userID]
+		h.mu.RUnlock()
+
+		if ok {
+			client.Close()
+		}
+	} else {
+		// User is connected to another server - send disconnect via pub/sub
+		disconnectMsg := protocol.MustNewMessage(protocol.TypeDisconnect, protocol.DisconnectPayload{
+			Reason: "new_connection",
+		})
+		data, err := disconnectMsg.Bytes()
+		if err != nil {
+			return err
+		}
+		if err := h.pubsub.Publish(ctx, userID, data); err != nil {
+			return err
+		}
+	}
+
+	// Give the other server a moment to process the disconnect
+	time.Sleep(100 * time.Millisecond)
+
+	return nil
 }
 
 // runClient manages a client's lifecycle
@@ -397,7 +479,7 @@ func (h *Hub) handleCallStart(ctx context.Context, client *Client, msg *protocol
 	}
 
 	callerInfo := toProtocolUserInfo(client.UserInfo())
-	_, err := h.callManager.StartCall(ctx, client.userID, payload.CalleeID, callerInfo)
+	session, err := h.callManager.StartCall(ctx, client.userID, payload.CalleeID, callerInfo)
 	if err != nil {
 		switch err {
 		case signaling.ErrUserOffline:
@@ -413,6 +495,18 @@ func (h *Hub) handleCallStart(ctx context.Context, client *Client, msg *protocol
 		}
 		return
 	}
+
+	// Send ringing confirmation to caller with session info
+	ringingMsg := protocol.MustNewMessage(protocol.TypeCallRinging, protocol.CallRingingPayload{
+		SessionID: session.SessionID,
+		CalleeID:  payload.CalleeID,
+	})
+	data, err := ringingMsg.Bytes()
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to serialize ringing message")
+		return
+	}
+	client.Send(data)
 }
 
 // handleCallAccept handles call.accept messages

@@ -107,6 +107,37 @@ func (m *SessionManager) IsUserOnline(ctx context.Context, userID string) (bool,
 	return result > 0, nil
 }
 
+// GetWebSocketServer returns the server ID that owns the user's WebSocket connection.
+// Returns empty string if user is not connected.
+func (m *SessionManager) GetWebSocketServer(ctx context.Context, userID string) (string, error) {
+	key := keyPrefixWsUser + userID
+	result, err := m.client.rdb.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get websocket server: %w", err)
+	}
+	return result, nil
+}
+
+// ForceAcquireWebSocket forcefully acquires the WebSocket slot for a user,
+// overwriting any existing connection. Use this when kicking an existing user.
+func (m *SessionManager) ForceAcquireWebSocket(ctx context.Context, userID, serverID string) error {
+	key := keyPrefixWsUser + userID
+
+	if err := m.client.rdb.Set(ctx, key, serverID, wsUserTTL).Err(); err != nil {
+		return fmt.Errorf("force acquire websocket: %w", err)
+	}
+
+	m.client.logger.Debug().
+		Str("user_id", userID).
+		Str("server_id", serverID).
+		Msg("WebSocket slot force acquired")
+
+	return nil
+}
+
 // Call session management
 
 // CreateCallSession creates a new call session in Redis.

@@ -186,8 +186,8 @@ Caller                    Server                    Callee
    │──call.start────────────▶│                         │
    │  {callee_id: "userB"}   │                         │
    │                         │──call.ring─────────────▶│
-   │                         │  {session_id, caller_id,│
-   │                         │   caller_info}          │
+   │◀───call.ringing─────────│  {session_id, caller_id,│
+   │  {session_id, callee_id}│   caller_info}          │
    │                         │                         │
    │                         │◀────────call.accept─────│
    │                         │  {session_id}           │
@@ -298,7 +298,19 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 
 #### Server → Client
 
-**call.ring** - Incoming call notification
+**call.ringing** - Call is ringing (sent to caller)
+
+```json
+{
+  "type": "call.ringing",
+  "payload": {
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "callee_id": "user-456"
+  }
+}
+```
+
+**call.ring** - Incoming call notification (sent to callee)
 ```json
 {
   "type": "call.ring",
@@ -538,6 +550,12 @@ class SignalingClient {
 
   private handleMessage(msg: { type: string; payload: any }) {
     switch (msg.type) {
+      case 'call.ringing':
+        // Call is ringing - save session_id to allow cancelling
+        this.sessionId = msg.payload.session_id;
+        this.onCallRinging?.(msg.payload.session_id, msg.payload.callee_id);
+        break;
+
       case 'call.ring':
         // Incoming call - show UI to accept/reject
         // caller_info contains: user_id, name, username, image_profile
@@ -664,6 +682,7 @@ class SignalingClient {
   }
 
   // Event callbacks - user info includes: user_id, name, username, image_profile
+  onCallRinging?: (sessionId: string, calleeId: string) => void;
   onIncomingCall?: (callerId: string, sessionId: string, callerInfo?: UserInfo) => void;
   onCallAccepted?: (calleeInfo?: UserInfo) => void;
   onCallEnded?: (reason: string, peerInfo?: UserInfo) => void;
@@ -680,6 +699,10 @@ interface UserInfo {
 
 // Usage
 const client = new SignalingClient('ws://localhost:8080', 'your-jwt-token');
+client.onCallRinging = (sessionId, calleeId) => {
+  // Call is now ringing - can use sessionId to cancel with endCall()
+  console.log(`Calling ${calleeId}, session: ${sessionId}`);
+};
 client.onIncomingCall = (callerId, sessionId, callerInfo) => {
   // Display caller's name and profile image if available
   const callerName = callerInfo?.name || callerInfo?.username || callerId;
@@ -716,6 +739,7 @@ class SignalingClient {
   final String serverUrl;
   final String token;
 
+  Function(String sessionId, String calleeId)? onCallRinging;
   Function(String callerId, String sessionId)? onIncomingCall;
   Function(MediaStream stream)? onRemoteStream;
   Function(String reason)? onCallEnded;
@@ -730,6 +754,10 @@ class SignalingClient {
   void _handleMessage(dynamic data) {
     final msg = jsonDecode(data);
     switch (msg['type']) {
+      case 'call.ringing':
+        _sessionId = msg['payload']['session_id'];
+        onCallRinging?.call(_sessionId!, msg['payload']['callee_id']);
+        break;
       case 'call.ring':
         _sessionId = msg['payload']['session_id'];
         onIncomingCall?.call(msg['payload']['caller_id'], _sessionId!);
