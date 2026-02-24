@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -61,17 +64,57 @@ func NewAPNsNotifier(cfg APNsConfig, logger zerolog.Logger) (*APNsNotifier, erro
 	}, nil
 }
 
-// loadP12 decodes a PKCS#12 (.p12) file and returns a tls.Certificate.
+// loadP12 decodes a PKCS#12 (.p12) file and returns a tls.Certificate with the full chain.
+// Uses pkcs12.ToPEM instead of pkcs12.Decode so that intermediate CA certificates bundled
+// in the .p12 are included — an incomplete chain can cause silent delivery failures on APNs.
 func loadP12(p12Data []byte, passphrase string) (tls.Certificate, error) {
-	privateKey, cert, err := pkcs12.Decode(p12Data, passphrase)
+	blocks, err := pkcs12.ToPEM(p12Data, passphrase)
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("decode p12: %w", err)
 	}
-	return tls.Certificate{
-		Certificate: [][]byte{cert.Raw},
-		PrivateKey:  privateKey,
-		Leaf:        cert,
-	}, nil
+
+	var keyPEM []byte
+	var certPEMs [][]byte // index 0 = leaf cert, 1+ = intermediate CA certs
+
+	for _, b := range blocks {
+		switch b.Type {
+		case "PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY":
+			keyPEM = pem.EncodeToMemory(b)
+		case "CERTIFICATE":
+			certPEMs = append(certPEMs, pem.EncodeToMemory(b))
+		}
+	}
+
+	if keyPEM == nil || len(certPEMs) == 0 {
+		return tls.Certificate{}, fmt.Errorf("p12: missing key or certificate")
+	}
+
+	// Build key pair using the leaf (first) certificate
+	tlsCert, err := tls.X509KeyPair(certPEMs[0], keyPEM)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("p12: build key pair: %w", err)
+	}
+
+	// Append intermediate CA certs to the TLS chain so APNs receives the full chain
+	for _, caPEM := range certPEMs[1:] {
+		b, _ := pem.Decode(caPEM)
+		if b == nil {
+			continue
+		}
+		parsed, err := x509.ParseCertificate(b.Bytes)
+		if err == nil {
+			tlsCert.Certificate = append(tlsCert.Certificate, parsed.Raw)
+		}
+	}
+
+	// Cache the parsed leaf cert to avoid repeated parsing during TLS handshakes
+	leaf, err := x509.ParseCertificate(tlsCert.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("p12: parse leaf: %w", err)
+	}
+	tlsCert.Leaf = leaf
+
+	return tlsCert, nil
 }
 
 type apnsPayload struct {
@@ -135,6 +178,18 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 	}
 	url := fmt.Sprintf("%s/3/device/%s", host, notif.DeviceToken)
 
+	// Truncate token for safe logging (last 8 chars only)
+	tokenSuffix := notif.DeviceToken
+	if len(tokenSuffix) > 8 {
+		tokenSuffix = "..." + tokenSuffix[len(tokenSuffix)-8:]
+	}
+
+	a.logger.Debug().
+		Str("url", url).
+		Str("token_suffix", tokenSuffix).
+		Str("topic", a.cfg.BundleID+".voip").
+		Msg("Sending APNs VoIP push")
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("apns: create request: %w", err)
@@ -151,18 +206,28 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode != http.StatusOK {
 		var apnsErr struct {
 			Reason    string `json:"reason"`
 			Timestamp int64  `json:"timestamp"`
 		}
-		json.NewDecoder(resp.Body).Decode(&apnsErr) //nolint:errcheck
+		json.Unmarshal(respBody, &apnsErr) //nolint:errcheck
+		a.logger.Error().
+			Int("status", resp.StatusCode).
+			Str("reason", apnsErr.Reason).
+			Str("token_suffix", tokenSuffix).
+			Str("url", url).
+			Msg("APNs rejected push notification")
 		return fmt.Errorf("apns: HTTP %d: %s", resp.StatusCode, apnsErr.Reason)
 	}
 
 	a.logger.Info().
 		Str("session_id", notif.SessionID).
-		Str("caller_id", notif.CallerID).
+		Str("apns_id", resp.Header.Get("apns-id")).
+		Str("token_suffix", tokenSuffix).
+		Str("url", url).
 		Msg("APNs push notification sent")
 
 	return nil
