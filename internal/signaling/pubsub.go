@@ -83,6 +83,14 @@ func (p *PubSub) Subscribe(ctx context.Context, userID string, handler MessageHa
 
 // receiveMessages processes incoming messages for a user subscription
 func (p *PubSub) receiveMessages(userID string, sub *goredis.PubSub) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error().
+				Interface("panic", r).
+				Str("user_id", userID).
+				Msg("Panic in PubSub receiveMessages")
+		}
+	}()
 	ch := sub.Channel()
 
 	for {

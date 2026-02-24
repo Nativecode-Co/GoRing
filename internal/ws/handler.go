@@ -419,6 +419,15 @@ func (h *Hub) heartbeatLoop(ctx context.Context, client *Client) {
 
 // handleMessage processes incoming WebSocket messages
 func (h *Hub) handleMessage(client *Client, data []byte) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.logger.Error().
+				Interface("panic", r).
+				Str("user_id", client.userID).
+				Msg("Panic in message handler")
+			h.sendError(client, protocol.ErrCodeInternalError, "Internal server error")
+		}
+	}()
 	msg, err := protocol.ParseMessage(data)
 	if err != nil {
 		h.logger.Warn().

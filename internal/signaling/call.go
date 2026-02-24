@@ -141,6 +141,15 @@ func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, 
 		}
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					m.logger.Error().
+						Interface("panic", r).
+						Str("session_id", session.SessionID).
+						Str("callee_id", calleeID).
+						Msg("Panic in push notification goroutine")
+				}
+			}()
 			notifCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 			err := notifier.SendCallNotification(notifCtx, notification.CallNotification{
