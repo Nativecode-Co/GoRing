@@ -17,6 +17,8 @@ services:
     restart: unless-stopped
     networks:
       - goring-network
+    volumes:
+      - /etc/ssl/apns/voip_certificate.p12:/etc/ssl/apns/voip_certificate.p12
 
   # Second server instance for testing horizontal scaling
   server-2:
@@ -39,6 +41,8 @@ services:
       - scaling
     networks:
       - goring-network
+    volumes:
+      - /etc/ssl/apns/voip_certificate.p12:/etc/ssl/apns/voip_certificate.p12
 
   redis:
     image: redis:7-alpine
