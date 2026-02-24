@@ -16,7 +16,7 @@ import (
 
 const (
 	apnsProductionHost = "https://api.push.apple.com"
-	apnsSandboxHost    = "https://api.development.push.apple.com"
+	apnsSandboxHost    = "https://api.sandbox.push.apple.com"
 )
 
 // APNsConfig holds Apple Push Notification service credentials (certificate-based auth).
