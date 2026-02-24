@@ -239,6 +239,8 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 		Str("apns_id", resp.Header.Get("apns-id")).
 		Str("device_token", notif.DeviceToken).
 		Str("url", url).
+		Int("status", resp.StatusCode).
+		Str("raw_body", string(respBody)).
 		Msg("APNs push notification sent")
 
 	return nil
