@@ -54,7 +54,9 @@ type UserInfo struct {
 
 // CallStartPayload is sent by caller to initiate a call
 type CallStartPayload struct {
-	CalleeID string `json:"callee_id"`
+	CalleeID          string `json:"callee_id"`
+	CalleeDeviceToken string `json:"callee_device_token,omitempty"` // FCM or APNs device token
+	CalleeOS          string `json:"callee_os,omitempty"`            // "android" or "ios"
 }
 
 // CallRingPayload is sent to callee when incoming call

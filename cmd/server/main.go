@@ -10,6 +10,7 @@ import (
 
 	"github.com/rs/zerolog"
 
+	"github.com/abdulkhalek/goring/internal/notification"
 	"github.com/abdulkhalek/goring/internal/redis"
 	"github.com/abdulkhalek/goring/internal/signaling"
 	"github.com/abdulkhalek/goring/internal/ws"
@@ -58,6 +59,7 @@ func main() {
 
 	// Initialize call manager
 	callManager := signaling.NewCallManager(sessions, pubsub, logger)
+	callManager.SetNotifier(setupNotifier(cfg, logger))
 
 	// Initialize WebSocket hub
 	hub := ws.NewHub(sessions, callManager, pubsub, cfg.JWTSecret, cfg.ServerID, logger)
@@ -123,6 +125,15 @@ type config struct {
 	RedisAddr     string
 	RedisPassword string
 	ServerID      string
+
+	// Push notification credentials (all optional)
+	FCMServiceAccountJSON string
+	FCMProjectID          string
+
+	APNsCertPath   string
+	APNsPassphrase string
+	APNsBundleID   string
+	APNsProduction bool
 }
 
 func loadConfig() config {
@@ -132,6 +143,14 @@ func loadConfig() config {
 		RedisAddr:     getEnv("REDIS_ADDR", "localhost:6379"),
 		RedisPassword: getEnv("REDIS_PASSWORD", ""),
 		ServerID:      getEnv("SERVER_ID", ""),
+
+		FCMServiceAccountJSON: getEnv("FCM_SERVICE_ACCOUNT_JSON", ""),
+		FCMProjectID:          getEnv("FCM_PROJECT_ID", ""),
+
+		APNsCertPath:   getEnv("APNS_CERT_PATH", ""),
+		APNsPassphrase: getEnv("APNS_CERT_PASSPHRASE", ""),
+		APNsBundleID:   getEnv("APNS_BUNDLE_ID", ""),
+		APNsProduction: getEnv("APNS_PRODUCTION", "false") == "true",
 	}
 
 	// Generate server ID from hostname if not set
@@ -158,4 +177,52 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// setupNotifier initialises the push notification backend from config.
+// Both FCM (Android) and APNs (iOS) are set up when credentials are present,
+// and a RoutingNotifier dispatches per call based on the device OS.
+// Falls back to NoopService if neither is configured.
+func setupNotifier(cfg config, logger zerolog.Logger) notification.Service {
+	var fcmNotifier notification.Service
+	var apnsNotifier notification.Service
+
+	if cfg.FCMServiceAccountJSON != "" && cfg.FCMProjectID != "" {
+		n, err := notification.NewFCMNotifier(notification.FCMConfig{
+			ServiceAccountJSON: []byte(cfg.FCMServiceAccountJSON),
+			ProjectID:          cfg.FCMProjectID,
+		}, logger)
+		if err != nil {
+			logger.Error().Err(err).Msg("Failed to initialize FCM notifier")
+		} else {
+			logger.Info().Str("project_id", cfg.FCMProjectID).Msg("FCM push notifications enabled")
+			fcmNotifier = n
+		}
+	}
+
+	if cfg.APNsCertPath != "" && cfg.APNsBundleID != "" {
+		n, err := notification.NewAPNsNotifier(notification.APNsConfig{
+			CertPath:   cfg.APNsCertPath,
+			Passphrase: cfg.APNsPassphrase,
+			BundleID:   cfg.APNsBundleID,
+			Production: cfg.APNsProduction,
+		}, logger)
+		if err != nil {
+			logger.Error().Err(err).Msg("Failed to initialize APNs notifier")
+		} else {
+			env := "sandbox"
+			if cfg.APNsProduction {
+				env = "production"
+			}
+			logger.Info().Str("bundle_id", cfg.APNsBundleID).Str("env", env).Msg("APNs push notifications enabled")
+			apnsNotifier = n
+		}
+	}
+
+	if fcmNotifier == nil && apnsNotifier == nil {
+		logger.Warn().Msg("No push notification credentials configured; offline callees will receive user_offline error")
+		return &notification.NoopService{}
+	}
+
+	return &notification.RoutingNotifier{FCM: fcmNotifier, APNs: apnsNotifier}
 }

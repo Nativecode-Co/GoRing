@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
+	"github.com/abdulkhalek/goring/internal/notification"
 	"github.com/abdulkhalek/goring/internal/protocol"
 	"github.com/abdulkhalek/goring/internal/redis"
 )
@@ -31,6 +32,7 @@ type CallManager struct {
 	pubsub   *PubSub
 	logger   zerolog.Logger
 	sender   MessageSender
+	notifier notification.Service
 }
 
 // NewCallManager creates a new call manager
@@ -48,9 +50,17 @@ func (m *CallManager) SetSender(sender MessageSender) {
 	m.sender = sender
 }
 
+// SetNotifier sets the push notification backend.
+// If never called, push notifications are silently skipped.
+func (m *CallManager) SetNotifier(n notification.Service) {
+	m.notifier = n
+}
+
 // StartCall initiates a new call from caller to callee.
-// Creates a new session in Redis and sends ring notification to callee.
-func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, callerInfo *protocol.UserInfo) (*redis.CallSession, error) {
+// Creates a new session in Redis and sends ring notification to callee via WebSocket.
+// If the callee is offline and a deviceToken is provided, sends a push notification
+// (FCM for Android, APNs for iOS) instead of returning ErrUserOffline.
+func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, callerInfo *protocol.UserInfo, deviceToken, deviceOS string) (*redis.CallSession, error) {
 	m.logger.Info().
 		Str("caller_id", callerID).
 		Str("callee_id", calleeID).
@@ -61,12 +71,19 @@ func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, 
 	if err != nil {
 		return nil, err
 	}
-	if !online {
+	if !online && deviceToken == "" {
 		m.logger.Warn().
 			Str("caller_id", callerID).
 			Str("callee_id", calleeID).
-			Msg("Call failed: callee offline")
+			Msg("Call failed: callee offline and no device token provided")
 		return nil, ErrUserOffline
+	}
+	if !online {
+		m.logger.Info().
+			Str("caller_id", callerID).
+			Str("callee_id", calleeID).
+			Str("device_os", deviceOS).
+			Msg("Callee offline, will send push notification")
 	}
 
 	// Create session
@@ -106,6 +123,50 @@ func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, 
 				Msg("Failed to send ring notification")
 			// Don't fail the call - callee might receive via pubsub or reconnect
 		}
+	}
+
+	// If callee was offline, send push notification to wake their app.
+	// Sent in a goroutine so the caller gets call.ringing immediately.
+	if !online && deviceToken != "" {
+		callerName, callerUsername, callerImage := "", "", ""
+		if callerInfo != nil {
+			callerName = callerInfo.Name
+			callerUsername = callerInfo.Username
+			callerImage = callerInfo.ImageProfile
+		}
+
+		notifier := m.notifier
+		if notifier == nil {
+			notifier = &notification.NoopService{}
+		}
+
+		go func() {
+			notifCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			err := notifier.SendCallNotification(notifCtx, notification.CallNotification{
+				DeviceToken:    deviceToken,
+				OS:             deviceOS,
+				SessionID:      session.SessionID,
+				CallerID:       callerID,
+				CallerName:     callerName,
+				CallerUsername: callerUsername,
+				CallerImage:    callerImage,
+			})
+			if err != nil {
+				m.logger.Error().
+					Str("session_id", session.SessionID).
+					Str("callee_id", calleeID).
+					Str("device_os", deviceOS).
+					Err(err).
+					Msg("Failed to send push notification to offline callee")
+			} else {
+				m.logger.Info().
+					Str("session_id", session.SessionID).
+					Str("callee_id", calleeID).
+					Str("device_os", deviceOS).
+					Msg("Push notification sent to offline callee")
+			}
+		}()
 	}
 
 	m.logger.Info().

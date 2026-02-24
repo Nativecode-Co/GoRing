@@ -479,7 +479,7 @@ func (h *Hub) handleCallStart(ctx context.Context, client *Client, msg *protocol
 	}
 
 	callerInfo := toProtocolUserInfo(client.UserInfo())
-	session, err := h.callManager.StartCall(ctx, client.userID, payload.CalleeID, callerInfo)
+	session, err := h.callManager.StartCall(ctx, client.userID, payload.CalleeID, callerInfo, payload.CalleeDeviceToken, payload.CalleeOS)
 	if err != nil {
 		switch err {
 		case signaling.ErrUserOffline:
