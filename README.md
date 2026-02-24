@@ -12,11 +12,12 @@ A production-ready Golang WebSocket signaling server for voice calling with Redi
 - **Race-condition safe** - Lua scripts for atomic state transitions
 - **Graceful shutdown** - Clean connection handling on SIGINT/SIGTERM
 - **Full WebRTC signaling** - SDP offer/answer and ICE candidate exchange
+- **Push notifications for offline callees** - FCM (Android) and APNs VoIP (iOS) when callee is not connected
 - **Working example client** - React + TypeScript web client included
 
 ## Architecture
 
-```
+```text
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │   Client A  │     │   Client B  │     │   Client C  │
 └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
@@ -47,11 +48,12 @@ A production-ready Golang WebSocket signaling server for voice calling with Redi
 
 ## Project Structure
 
-```
+```text
 goring/
 ├── cmd/server/            # Application entry point
 ├── internal/
 │   ├── auth/             # JWT token validation
+│   ├── notification/     # Push notification backends (FCM, APNs)
 │   ├── protocol/         # WebSocket message definitions
 │   ├── redis/            # Redis client and session management
 │   ├── signaling/        # Call logic and pub/sub
@@ -148,12 +150,32 @@ wscat -c "ws://localhost:8080/ws?token=<JWT>"
 ### Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+| -------- | ------- | ----------- |
 | `PORT` | `8080` | HTTP server port |
 | `JWT_SECRET` | `dev-secret-change-in-production` | Secret key for JWT validation |
 | `REDIS_ADDR` | `localhost:6379` | Redis server address |
 | `REDIS_PASSWORD` | (empty) | Redis password |
 | `SERVER_ID` | (hostname) | Unique server instance identifier |
+
+#### Push Notifications (Optional)
+
+Configure FCM and/or APNs to notify offline callees. If neither is set, calling an offline user returns a `user_offline` error.
+
+##### Android — Firebase Cloud Messaging (FCM v1 API)
+
+| Variable                   | Description                                             |
+| -------------------------- | ------------------------------------------------------- |
+| `FCM_SERVICE_ACCOUNT_JSON` | Full contents of the Firebase service account JSON file |
+| `FCM_PROJECT_ID`           | Firebase project ID (e.g. `my-firebase-project`)        |
+
+##### iOS — Apple Push Notification service (VoIP, certificate-based)
+
+| Variable              | Description                                                              |
+| --------------------- | ------------------------------------------------------------------------ |
+| `APNS_CERT_PATH`      | Path to the `.p12` VoIP certificate file                                 |
+| `APNS_CERT_PASSPHRASE`| Certificate passphrase                                                   |
+| `APNS_BUNDLE_ID`      | App bundle ID (e.g. `com.example.app`); topic sent as `<bundle_id>.voip` |
+| `APNS_PRODUCTION`     | `true` for production APNs endpoint, `false` for sandbox                 |
 
 ### Environment Files
 
@@ -180,39 +202,51 @@ All messages follow this envelope format:
 
 ### Call Flow with WebRTC Signaling
 
-```
+#### Callee online
+
+```text
 Caller                    Server                    Callee
    │                         │                         │
    │──call.start────────────▶│                         │
-   │  {callee_id: "userB"}   │                         │
-   │                         │──call.ring─────────────▶│
+   │  {callee_id, ...}       │──call.ring─────────────▶│
    │◀───call.ringing─────────│  {session_id, caller_id,│
    │  {session_id, callee_id}│   caller_info}          │
    │                         │                         │
    │                         │◀────────call.accept─────│
-   │                         │  {session_id}           │
-   │◀───call.accepted────────│                         │
+   │◀───call.accepted────────│  {session_id}           │
    │  {session_id,           │                         │
    │   callee_info}          │                         │
    │                         │                         │
    │  ─────────── WebRTC Signaling Phase ───────────  │
    │                         │                         │
    │──webrtc.offer──────────▶│──webrtc.offer─────────▶│
-   │  {session_id, sdp}      │  {session_id, sdp}     │
-   │                         │                         │
    │◀─────────webrtc.answer──│◀─────────webrtc.answer─│
-   │  {session_id, sdp}      │  {session_id, sdp}     │
-   │                         │                         │
    │──webrtc.ice────────────▶│──webrtc.ice───────────▶│
    │◀─────────────webrtc.ice─│◀────────────webrtc.ice─│
-   │  (ICE candidates exchanged in both directions)   │
    │                         │                         │
    │  ═══════════ P2P Media Connection ═══════════   │
    │                         │                         │
-   │──call.end──────────────▶│                         │
-   │  {session_id}           │                         │
-   │                         │──call.ended────────────▶│
+   │──call.end──────────────▶│──call.ended────────────▶│
    │                         │  {session_id, reason}   │
+```
+
+#### Callee offline (push notification fallback)
+
+```text
+Caller                    Server              FCM/APNs          Callee App
+   │                         │                    │                  │
+   │──call.start────────────▶│                    │                  │
+   │  {callee_id,            │                    │                  │
+   │   callee_device_token,  │──IsUserOnline?─────▶Redis             │
+   │   callee_os}            │◀── offline ────────│                  │
+   │                         │──CreateSession─────▶Redis             │
+   │◀───call.ringing─────────│                    │                  │
+   │  {session_id, callee_id}│──[goroutine]───────▶                  │
+   │                         │  SendCallNotif     │──push───────────▶│
+   │                         │                    │  (VoIP/FCM)      │
+   │                         │◀─────────WebSocket connect ──────────│
+   │                         │◀─────────call.accept ────────────────│
+   │◀───call.accepted────────│                    │                  │
 ```
 
 ### Message Types
@@ -220,16 +254,22 @@ Caller                    Server                    Callee
 #### Client → Server
 
 **call.start** - Initiate a call
+
 ```json
 {
   "type": "call.start",
   "payload": {
-    "callee_id": "user-456"
+    "callee_id": "user-456",
+    "callee_device_token": "fcm-or-apns-token",
+    "callee_os": "android"
   }
 }
 ```
 
+`callee_device_token` and `callee_os` (`"android"` or `"ios"`) are optional. When provided and the callee is offline, the server sends a push notification instead of returning `user_offline`.
+
 **call.accept** - Accept incoming call
+
 ```json
 {
   "type": "call.accept",
@@ -240,6 +280,7 @@ Caller                    Server                    Callee
 ```
 
 **call.reject** - Reject incoming call
+
 ```json
 {
   "type": "call.reject",
@@ -250,6 +291,7 @@ Caller                    Server                    Callee
 ```
 
 **call.end** - End active call
+
 ```json
 {
   "type": "call.end",
@@ -264,6 +306,7 @@ Caller                    Server                    Callee
 These messages are forwarded to the peer. Only valid after call is accepted.
 
 **webrtc.offer** - Send SDP offer (caller → callee)
+
 ```json
 {
   "type": "webrtc.offer",
@@ -275,6 +318,7 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ```
 
 **webrtc.answer** - Send SDP answer (callee → caller)
+
 ```json
 {
   "type": "webrtc.answer",
@@ -286,6 +330,7 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ```
 
 **webrtc.ice** - Send ICE candidate (both directions)
+
 ```json
 {
   "type": "webrtc.ice",
@@ -311,6 +356,7 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ```
 
 **call.ring** - Incoming call notification (sent to callee)
+
 ```json
 {
   "type": "call.ring",
@@ -328,6 +374,7 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ```
 
 **call.accepted** - Call was accepted
+
 ```json
 {
   "type": "call.accepted",
@@ -344,6 +391,7 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ```
 
 **call.rejected** - Call was rejected
+
 ```json
 {
   "type": "call.rejected",
@@ -360,6 +408,7 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ```
 
 **call.ended** - Call has ended
+
 ```json
 {
   "type": "call.ended",
@@ -377,6 +426,7 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ```
 
 **error** - Error occurred
+
 ```json
 {
   "type": "error",
@@ -390,11 +440,11 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ### Error Codes
 
 | Code | Description |
-|------|-------------|
+| ---- | ----------- |
 | `invalid_message` | Malformed message or unknown type |
 | `unauthorized` | Not authorized for this operation |
 | `user_busy` | Target user is already in a call |
-| `user_offline` | Target user is not connected |
+| `user_offline` | Target user is not connected and no device token was provided |
 | `session_not_found` | Call session does not exist |
 | `invalid_state` | Invalid state transition (e.g., double accept) |
 | `internal_error` | Server-side error |
@@ -402,14 +452,14 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ## Redis Data Model
 
 | Key Pattern | Type | TTL | Purpose |
-|-------------|------|-----|---------|
+| ----------- | ---- | --- | ------- |
 | `ws:user:{user_id}` | STRING | 30s | User's WebSocket server ID |
 | `call:session:{session_id}` | HASH | 120s | Call session state |
 | `call:user:{user_id}` | STRING | 120s | User's active call session |
 
 ### call:session Hash Fields
 
-```
+```text
 caller_id   - ID of the user who initiated the call
 callee_id   - ID of the user being called
 state       - Current state: ringing | accepted | rejected | ended
@@ -424,7 +474,7 @@ The server supports horizontal scaling via Redis pub/sub:
 2. When sending a message to a user on another instance, publish to their channel
 3. The instance with the connection receives and forwards the message
 
-```
+```text
 ┌──────────────┐          ┌──────────────┐
 │  Instance 1  │          │  Instance 2  │
 │  (User A)    │          │  (User B)    │
@@ -876,8 +926,13 @@ class SignalingClient {
   - **client.go** - Redis client wrapper
   - **session.go** - Session and state management with atomic operations
 
+- **[internal/notification/](internal/notification/)** - Push notification backends
+  - **notification.go** - `Service` interface, `RoutingNotifier` (dispatches by OS), `NoopService`
+  - **fcm.go** - Firebase Cloud Messaging v1 via OAuth2 service account
+  - **apns.go** - Apple Push Notification service via `.p12` certificate + HTTP/2
+
 - **[internal/signaling/](internal/signaling/)** - Call orchestration
-  - **call.go** - Call lifecycle management (start, accept, reject, end)
+  - **call.go** - Call lifecycle management (start, accept, reject, end); sends push notifications for offline callees
   - **pubsub.go** - Cross-instance messaging for horizontal scaling
 
 - **[internal/ws/](internal/ws/)** - WebSocket handling
@@ -896,25 +951,31 @@ class SignalingClient {
 ## Technologies
 
 ### Backend
-- **Go 1.21+** with standard library HTTP server
+
+- **Go 1.24+** with standard library HTTP server
 - **gorilla/websocket** for WebSocket connections
 - **redis/go-redis/v9** for state management
 - **golang-jwt/jwt/v5** for authentication
 - **rs/zerolog** for structured logging
+- **golang.org/x/oauth2** for FCM service account authentication
+- **golang.org/x/crypto** for `.p12` certificate decoding (APNs)
 
 ### Frontend (Example Client)
+
 - **React 18** with TypeScript 5
 - **Vite 5** for development and building
 - **Native WebRTC API** for peer-to-peer media
 - **Native WebSocket API** for signaling
 
 ### Infrastructure
+
 - **Redis 7** for state and pub/sub
 - **Docker** and **Docker Compose** for deployment
 
 ## Production Considerations
 
 ### Security
+
 - Always use secure JWT secrets in production
 - Consider rate limiting on WebSocket connections
 - Use WSS (WebSocket Secure) in production
@@ -922,12 +983,14 @@ class SignalingClient {
 - Validate and sanitize all client inputs
 
 ### Scaling
+
 - The server is stateless and can scale horizontally
 - Use a load balancer (e.g., nginx, HAProxy) in front of multiple instances
 - Redis can be clustered for high availability
 - Monitor Redis memory usage and set appropriate TTLs
 
 ### Monitoring
+
 - Health check endpoint at `/health` for load balancer checks
 - Structured JSON logs for aggregation (ELK, Datadog, etc.)
 - Monitor WebSocket connection count
