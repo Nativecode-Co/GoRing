@@ -198,6 +198,8 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 	// TLS client certificate handles authentication — no Authorization header needed.
 	req.Header.Set("apns-topic", a.cfg.BundleID+".voip")
 	req.Header.Set("apns-push-type", "voip")
+	req.Header.Set("apns-priority", "10")
+	req.Header.Set("apns-expiration", "0")
 	req.Header.Set("content-type", "application/json")
 
 	resp, err := a.httpClient.Do(req)
