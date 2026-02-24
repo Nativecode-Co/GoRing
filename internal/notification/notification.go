@@ -2,7 +2,13 @@ package notification
 
 import "context"
 
-// CallNotification holds all data needed to send an incoming call push notification.
+// Notification type constants
+const (
+	NotifTypeIncomingCall  = "incoming_call"
+	NotifTypeCallCancelled = "call_cancelled"
+)
+
+// CallNotification holds all data needed to send a call push notification.
 type CallNotification struct {
 	DeviceToken    string // FCM registration token or APNs device token
 	OS             string // "android" or "ios"
@@ -11,6 +17,15 @@ type CallNotification struct {
 	CallerName     string
 	CallerUsername string
 	CallerImage    string
+	Type           string // "incoming_call" or "call_cancelled"; empty defaults to "incoming_call"
+}
+
+// EffectiveType returns the notification type, defaulting to "incoming_call" for backward compatibility.
+func (n CallNotification) EffectiveType() string {
+	if n.Type == "" {
+		return NotifTypeIncomingCall
+	}
+	return n.Type
 }
 
 // Service is the interface implemented by all push notification backends.

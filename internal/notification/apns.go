@@ -158,7 +158,7 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 			},
 			ContentAvailable: 1,
 		},
-		Type:           "incoming_call",
+		Type:           notif.EffectiveType(),
 		SessionID:      notif.SessionID,
 		CallerID:       notif.CallerID,
 		CallerName:     notif.CallerName,

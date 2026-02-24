@@ -454,6 +454,8 @@ func (h *Hub) handleMessage(client *Client, data []byte) {
 		h.handleCallReject(ctx, client, msg)
 	case protocol.TypeCallEnd:
 		h.handleCallEnd(ctx, client, msg)
+	case protocol.TypeCallCheck:
+		h.handleCallCheck(ctx, client, msg)
 	case protocol.TypeWebRTCOffer:
 		h.handleWebRTCOffer(ctx, client, msg)
 	case protocol.TypeWebRTCAnswer:
@@ -619,6 +621,59 @@ func (h *Hub) handleCallEnd(ctx context.Context, client *Client, msg *protocol.M
 		}
 		return
 	}
+}
+
+// handleCallCheck handles call.check messages - session validation for push-woken clients
+func (h *Hub) handleCallCheck(ctx context.Context, client *Client, msg *protocol.Message) {
+	var payload protocol.CallCheckPayload
+	if err := msg.ParsePayload(&payload); err != nil {
+		h.sendError(client, protocol.ErrCodeInvalidMessage, "Invalid payload")
+		return
+	}
+
+	if payload.SessionID == "" {
+		h.sendError(client, protocol.ErrCodeInvalidMessage, "Missing session_id")
+		return
+	}
+
+	session, err := h.callManager.CheckCall(ctx, client.userID, payload.SessionID)
+	if err != nil {
+		if err == signaling.ErrSessionNotFound {
+			// Session not found is a normal outcome - tell the client the call no longer exists
+			resultMsg := protocol.MustNewMessage(protocol.TypeCallCheckResult, protocol.CallCheckResultPayload{
+				SessionID: payload.SessionID,
+				Exists:    false,
+			})
+			data, _ := resultMsg.Bytes()
+			client.Send(data)
+			return
+		}
+		if err == signaling.ErrNotAuthorized {
+			h.sendError(client, protocol.ErrCodeUnauthorized, "Not authorized")
+			return
+		}
+		h.logger.Error().
+			Str("user_id", client.userID).
+			Str("session_id", payload.SessionID).
+			Err(err).
+			Msg("Failed to check call")
+		h.sendError(client, protocol.ErrCodeInternalError, "Failed to check call")
+		return
+	}
+
+	// Session exists - return its state
+	resultMsg := protocol.MustNewMessage(protocol.TypeCallCheckResult, protocol.CallCheckResultPayload{
+		SessionID: payload.SessionID,
+		Exists:    true,
+		State:     session.State,
+		CallerID:  session.CallerID,
+	})
+	data, err := resultMsg.Bytes()
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Failed to serialize call check result")
+		return
+	}
+	client.Send(data)
 }
 
 // handleWebRTCOffer handles webrtc.offer messages

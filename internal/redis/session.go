@@ -29,11 +29,13 @@ var (
 
 // CallSession represents a call session stored in Redis
 type CallSession struct {
-	SessionID string
-	CallerID  string
-	CalleeID  string
-	State     string
-	CreatedAt time.Time
+	SessionID   string
+	CallerID    string
+	CalleeID    string
+	State       string
+	CreatedAt   time.Time
+	DeviceToken string // Callee's push notification token (empty if callee was online)
+	DeviceOS    string // "android" or "ios" (empty if callee was online)
 }
 
 // SessionManager handles all session-related Redis operations
@@ -180,10 +182,12 @@ func (m *SessionManager) CreateCallSession(ctx context.Context, session *CallSes
 		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			// Create the session hash
 			pipe.HSet(ctx, sessionKey, map[string]any{
-				"caller_id":  session.CallerID,
-				"callee_id":  session.CalleeID,
-				"state":      session.State,
-				"created_at": session.CreatedAt.Unix(),
+				"caller_id":    session.CallerID,
+				"callee_id":    session.CalleeID,
+				"state":        session.State,
+				"created_at":   session.CreatedAt.Unix(),
+				"device_token": session.DeviceToken,
+				"device_os":    session.DeviceOS,
 			})
 			pipe.Expire(ctx, sessionKey, callSessionTTL)
 
@@ -232,11 +236,13 @@ func (m *SessionManager) GetCallSession(ctx context.Context, sessionID string) (
 	}
 
 	return &CallSession{
-		SessionID: sessionID,
-		CallerID:  result["caller_id"],
-		CalleeID:  result["callee_id"],
-		State:     result["state"],
-		CreatedAt: time.Unix(createdAt, 0),
+		SessionID:   sessionID,
+		CallerID:    result["caller_id"],
+		CalleeID:    result["callee_id"],
+		State:       result["state"],
+		CreatedAt:   time.Unix(createdAt, 0),
+		DeviceToken: result["device_token"],
+		DeviceOS:    result["device_os"],
 	}, nil
 }
 

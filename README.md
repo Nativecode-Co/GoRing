@@ -13,6 +13,7 @@ A production-ready Golang WebSocket signaling server for voice calling with Redi
 - **Graceful shutdown** - Clean connection handling on SIGINT/SIGTERM
 - **Full WebRTC signaling** - SDP offer/answer and ICE candidate exchange
 - **Push notifications for offline callees** - FCM (Android) and APNs VoIP (iOS) when callee is not connected
+- **Cancel notifications** - Automatic cancel push when caller hangs up before callee answers, plus `call.check` for session validation
 - **Working example client** - React + TypeScript web client included
 
 ## Architecture
@@ -236,17 +237,42 @@ Caller                    Server                    Callee
 Caller                    Server              FCM/APNs          Callee App
    │                         │                    │                  │
    │──call.start────────────▶│                    │                  │
-   │  {callee_id,            │                    │                  │
-   │   callee_device_token,  │──IsUserOnline?─────▶Redis             │
-   │   callee_os}            │◀── offline ────────│                  │
-   │                         │──CreateSession─────▶Redis             │
+   │  {callee_id,            │──IsUserOnline?─────▶Redis             │
+   │   callee_device_token,  │◀── offline ────────│                  │
+   │   callee_os}            │──CreateSession─────▶Redis             │
    │◀───call.ringing─────────│                    │                  │
    │  {session_id, callee_id}│──[goroutine]───────▶                  │
    │                         │  SendCallNotif     │──push───────────▶│
    │                         │                    │  (VoIP/FCM)      │
    │                         │◀─────────WebSocket connect ──────────│
+   │                         │◀─────────call.check ─────────────────│
+   │                         │──call.check_result──────────────────▶│
+   │                         │  {exists: true}    │                  │
    │                         │◀─────────call.accept ────────────────│
    │◀───call.accepted────────│                    │                  │
+```
+
+#### Caller hangs up before callee wakes (cancel notification)
+
+```text
+Caller                    Server              FCM/APNs          Callee App
+   │                         │                    │                  │
+   │──call.start────────────▶│                    │                  │
+   │◀───call.ringing─────────│──push──────────────▶──────────────────│
+   │                         │  (incoming_call)   │                  │
+   │──call.end──────────────▶│                    │                  │
+   │                         │──push──────────────▶──────────────────│
+   │                         │  (call_cancelled)  │                  │
+   │                         │──DeleteSession─────▶Redis             │
+   │                         │                    │                  │
+   │                         │          If cancel push arrives:      │
+   │                         │          → App dismisses call UI      │
+   │                         │                    │                  │
+   │                         │          If cancel push missed:       │
+   │                         │◀─────────WebSocket connect ──────────│
+   │                         │◀─────────call.check ─────────────────│
+   │                         │──call.check_result──────────────────▶│
+   │                         │  {exists: false}   │   → Stop ringing│
 ```
 
 ### Message Types
@@ -297,6 +323,43 @@ Caller                    Server              FCM/APNs          Callee App
   "type": "call.end",
   "payload": {
     "session_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+**call.check** - Validate session before ringing (for push-woken clients)
+
+When a callee's app wakes from a push notification, it should send `call.check` to verify the call is still active before showing the ringing UI. This handles the race condition where the caller hangs up before the callee's app wakes up.
+
+```json
+{
+  "type": "call.check",
+  "payload": {
+    "session_id": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+Response (`call.check_result`):
+
+```json
+// Session still active
+{
+  "type": "call.check_result",
+  "payload": {
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "exists": true,
+    "state": "ringing",
+    "caller_id": "user-123"
+  }
+}
+
+// Session no longer exists (caller hung up)
+{
+  "type": "call.check_result",
+  "payload": {
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "exists": false
   }
 }
 ```
@@ -460,10 +523,12 @@ These messages are forwarded to the peer. Only valid after call is accepted.
 ### call:session Hash Fields
 
 ```text
-caller_id   - ID of the user who initiated the call
-callee_id   - ID of the user being called
-state       - Current state: ringing | accepted | rejected | ended
-created_at  - Unix timestamp of session creation
+caller_id    - ID of the user who initiated the call
+callee_id    - ID of the user being called
+state        - Current state: ringing | accepted | rejected | ended
+created_at   - Unix timestamp of session creation
+device_token - Callee's push notification token (empty if callee was online)
+device_os    - Callee's device OS: android | ios (empty if callee was online)
 ```
 
 ## Horizontal Scaling

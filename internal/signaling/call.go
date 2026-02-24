@@ -88,11 +88,13 @@ func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, 
 
 	// Create session
 	session := &redis.CallSession{
-		SessionID: uuid.New().String(),
-		CallerID:  callerID,
-		CalleeID:  calleeID,
-		State:     protocol.StateRinging,
-		CreatedAt: time.Now(),
+		SessionID:   uuid.New().String(),
+		CallerID:    callerID,
+		CalleeID:    calleeID,
+		State:       protocol.StateRinging,
+		CreatedAt:   time.Now(),
+		DeviceToken: deviceToken,
+		DeviceOS:    deviceOS,
 	}
 
 	// CreateCallSession will atomically check if either user is busy
@@ -381,6 +383,11 @@ func (m *CallManager) EndCall(ctx context.Context, userID, sessionID string, use
 		}
 	}
 
+	// If the caller is ending a ringing call and a push was sent, cancel it on the device
+	if session.State == protocol.StateRinging && userID == session.CallerID {
+		m.sendCancelNotification(session)
+	}
+
 	// Clean up session
 	if err := m.sessions.DeleteCallSession(ctx, sessionID); err != nil {
 		m.logger.Error().
@@ -490,6 +497,11 @@ func (m *CallManager) HandleDisconnect(ctx context.Context, userID string) error
 		}
 	}
 
+	// If the disconnecting user was the caller and the call was still ringing, cancel the push
+	if session.State == protocol.StateRinging && userID == session.CallerID {
+		m.sendCancelNotification(session)
+	}
+
 	m.logger.Info().
 		Str("session_id", session.SessionID).
 		Str("disconnected_user", userID).
@@ -497,4 +509,80 @@ func (m *CallManager) HandleDisconnect(ctx context.Context, userID string) error
 		Msg("Call ended due to disconnect")
 
 	return nil
+}
+
+// CheckCall checks whether a call session still exists and returns its current state.
+// Used by callees who wake from a push notification to verify the call is still active.
+func (m *CallManager) CheckCall(ctx context.Context, userID, sessionID string) (*redis.CallSession, error) {
+	m.logger.Info().
+		Str("user_id", userID).
+		Str("session_id", sessionID).
+		Msg("Checking call session")
+
+	session, err := m.sessions.GetCallSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, redis.ErrSessionNotFound) {
+			return nil, ErrSessionNotFound
+		}
+		return nil, err
+	}
+
+	if session.CallerID != userID && session.CalleeID != userID {
+		m.logger.Warn().
+			Str("user_id", userID).
+			Str("session_id", sessionID).
+			Msg("Check rejected: not a participant")
+		return nil, ErrNotAuthorized
+	}
+
+	return session, nil
+}
+
+// sendCancelNotification sends a "call_cancelled" push notification to the callee's device
+// so the app can dismiss the ringing UI. Only sends if the session had push notification info.
+func (m *CallManager) sendCancelNotification(session *redis.CallSession) {
+	if session.DeviceToken == "" || session.DeviceOS == "" {
+		return
+	}
+
+	notifier := m.notifier
+	if notifier == nil {
+		notifier = &notification.NoopService{}
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				m.logger.Error().
+					Interface("panic", r).
+					Str("session_id", session.SessionID).
+					Str("callee_id", session.CalleeID).
+					Msg("Panic in cancel notification goroutine")
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+
+		err := notifier.SendCallNotification(ctx, notification.CallNotification{
+			DeviceToken: session.DeviceToken,
+			OS:          session.DeviceOS,
+			SessionID:   session.SessionID,
+			CallerID:    session.CallerID,
+			Type:        notification.NotifTypeCallCancelled,
+		})
+		if err != nil {
+			m.logger.Error().
+				Str("session_id", session.SessionID).
+				Str("callee_id", session.CalleeID).
+				Str("device_os", session.DeviceOS).
+				Err(err).
+				Msg("Failed to send cancel push notification")
+		} else {
+			m.logger.Info().
+				Str("session_id", session.SessionID).
+				Str("callee_id", session.CalleeID).
+				Str("device_os", session.DeviceOS).
+				Msg("Cancel push notification sent")
+		}
+	}()
 }

@@ -67,7 +67,7 @@ func (f *FCMNotifier) SendCallNotification(ctx context.Context, notif CallNotifi
 		Message: fcmMessageBody{
 			Token: notif.DeviceToken,
 			Data: map[string]string{
-				"type":            "incoming_call",
+				"type":            notif.EffectiveType(),
 				"session_id":      notif.SessionID,
 				"caller_id":       notif.CallerID,
 				"caller_name":     notif.CallerName,

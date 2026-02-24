@@ -12,6 +12,7 @@ const (
 	TypeCallAccept = "call.accept"
 	TypeCallReject = "call.reject"
 	TypeCallEnd    = "call.end"
+	TypeCallCheck  = "call.check" // Validate session before ringing (for push-woken clients)
 
 	// Client <-> Server (WebRTC Signaling - relayed to peer)
 	TypeWebRTCOffer  = "webrtc.offer"
@@ -23,8 +24,9 @@ const (
 	TypeCallRing     = "call.ring"    // Sent to callee for incoming call
 	TypeCallAccepted = "call.accepted"
 	TypeCallRejected = "call.rejected"
-	TypeCallEnded    = "call.ended"
-	TypeError        = "error"
+	TypeCallEnded       = "call.ended"
+	TypeCallCheckResult = "call.check_result" // Response to call.check
+	TypeError           = "error"
 
 	// Internal (Server -> Server via pub/sub)
 	TypeDisconnect = "internal.disconnect"
@@ -75,6 +77,19 @@ type CallRingingPayload struct {
 // CallSessionPayload is used for accept/reject/end operations
 type CallSessionPayload struct {
 	SessionID string `json:"session_id"`
+}
+
+// CallCheckPayload is sent by callee to validate a session after waking from push notification
+type CallCheckPayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// CallCheckResultPayload is the server's response to a call.check message
+type CallCheckResultPayload struct {
+	SessionID string `json:"session_id"`
+	Exists    bool   `json:"exists"`
+	State     string `json:"state,omitempty"`
+	CallerID  string `json:"caller_id,omitempty"`
 }
 
 // CallAcceptedPayload is sent to caller when call is accepted
