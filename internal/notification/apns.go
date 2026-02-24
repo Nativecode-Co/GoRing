@@ -184,10 +184,18 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 		tokenSuffix = "..." + tokenSuffix[len(tokenSuffix)-8:]
 	}
 
-	a.logger.Debug().
+	a.logger.Info().
 		Str("url", url).
-		Str("token_suffix", tokenSuffix).
+		Str("device_token", notif.DeviceToken).
 		Str("topic", a.cfg.BundleID+".voip").
+		Str("push_type", "voip").
+		Str("priority", "10").
+		Str("expiration", "0").
+		Str("session_id", notif.SessionID).
+		Str("caller_id", notif.CallerID).
+		Str("caller_name", notif.CallerName).
+		Str("caller_username", notif.CallerUsername).
+		RawJSON("payload", body).
 		Msg("Sending APNs VoIP push")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -219,7 +227,8 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 		a.logger.Error().
 			Int("status", resp.StatusCode).
 			Str("reason", apnsErr.Reason).
-			Str("token_suffix", tokenSuffix).
+			Str("raw_body", string(respBody)).
+			Str("device_token", notif.DeviceToken).
 			Str("url", url).
 			Msg("APNs rejected push notification")
 		return fmt.Errorf("apns: HTTP %d: %s", resp.StatusCode, apnsErr.Reason)
@@ -228,7 +237,7 @@ func (a *APNsNotifier) SendCallNotification(ctx context.Context, notif CallNotif
 	a.logger.Info().
 		Str("session_id", notif.SessionID).
 		Str("apns_id", resp.Header.Get("apns-id")).
-		Str("token_suffix", tokenSuffix).
+		Str("device_token", notif.DeviceToken).
 		Str("url", url).
 		Msg("APNs push notification sent")
 
