@@ -96,6 +96,11 @@ func (m *CallManager) StartCall(ctx context.Context, callerID, calleeID string, 
 		DeviceToken: deviceToken,
 		DeviceOS:    deviceOS,
 	}
+	if callerInfo != nil {
+		session.CallerName = callerInfo.Name
+		session.CallerUsername = callerInfo.Username
+		session.CallerImage = callerInfo.ImageProfile
+	}
 
 	// CreateCallSession will atomically check if either user is busy
 	if err := m.sessions.CreateCallSession(ctx, session); err != nil {
@@ -507,6 +512,103 @@ func (m *CallManager) HandleDisconnect(ctx context.Context, userID string) error
 		Str("disconnected_user", userID).
 		Str("peer_id", peerID).
 		Msg("Call ended due to disconnect")
+
+	return nil
+}
+
+// HandleReconnect checks if the reconnecting user has an active ringing call
+// and resends the appropriate notification:
+//   - If user is the callee: resend call.ring
+//   - If user is the caller: resend call.ringing
+func (m *CallManager) HandleReconnect(ctx context.Context, userID string) error {
+	m.logger.Info().
+		Str("user_id", userID).
+		Msg("Checking for active calls on reconnect")
+
+	sessionID, err := m.sessions.GetUserCall(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if sessionID == "" {
+		m.logger.Debug().
+			Str("user_id", userID).
+			Msg("No active call on reconnect")
+		return nil
+	}
+
+	session, err := m.sessions.GetCallSession(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, redis.ErrSessionNotFound) {
+			_ = m.sessions.ClearUserCall(ctx, userID)
+			return nil
+		}
+		return err
+	}
+
+	if session.State != protocol.StateRinging {
+		m.logger.Debug().
+			Str("user_id", userID).
+			Str("session_id", sessionID).
+			Str("state", session.State).
+			Msg("Active call not in ringing state, skipping reconnect resend")
+		return nil
+	}
+
+	if m.sender == nil {
+		return nil
+	}
+
+	if session.CalleeID == userID {
+		var callerInfo *protocol.UserInfo
+		if session.CallerName != "" || session.CallerUsername != "" || session.CallerImage != "" {
+			callerInfo = &protocol.UserInfo{
+				UserID:       session.CallerID,
+				Name:         session.CallerName,
+				Username:     session.CallerUsername,
+				ImageProfile: session.CallerImage,
+			}
+		}
+
+		ringMsg := protocol.MustNewMessage(protocol.TypeCallRing, protocol.CallRingPayload{
+			SessionID:  sessionID,
+			CallerID:   session.CallerID,
+			CallerInfo: callerInfo,
+		})
+
+		if err := m.sender.SendToUser(ctx, userID, ringMsg); err != nil {
+			m.logger.Error().
+				Str("session_id", sessionID).
+				Str("callee_id", userID).
+				Err(err).
+				Msg("Failed to resend call.ring on reconnect")
+			return err
+		}
+
+		m.logger.Info().
+			Str("session_id", sessionID).
+			Str("callee_id", userID).
+			Msg("Resent call.ring to callee on reconnect")
+
+	} else if session.CallerID == userID {
+		ringingMsg := protocol.MustNewMessage(protocol.TypeCallRinging, protocol.CallRingingPayload{
+			SessionID: sessionID,
+			CalleeID:  session.CalleeID,
+		})
+
+		if err := m.sender.SendToUser(ctx, userID, ringingMsg); err != nil {
+			m.logger.Error().
+				Str("session_id", sessionID).
+				Str("caller_id", userID).
+				Err(err).
+				Msg("Failed to resend call.ringing on reconnect")
+			return err
+		}
+
+		m.logger.Info().
+			Str("session_id", sessionID).
+			Str("caller_id", userID).
+			Msg("Resent call.ringing to caller on reconnect")
+	}
 
 	return nil
 }

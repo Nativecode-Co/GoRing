@@ -137,6 +137,28 @@ func (h *Hub) handleRegister(client *Client) {
 		Str("user_id", client.userID).
 		Int("total_clients", len(h.clients)).
 		Msg("Client registered")
+
+	// Check for pending calls asynchronously to avoid blocking the hub loop
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				h.logger.Error().
+					Interface("panic", r).
+					Str("user_id", client.userID).
+					Msg("Panic in reconnect handler")
+			}
+		}()
+
+		ctx, cancel := context.WithTimeout(h.ctx, 5*time.Second)
+		defer cancel()
+
+		if err := h.callManager.HandleReconnect(ctx, client.userID); err != nil {
+			h.logger.Error().
+				Str("user_id", client.userID).
+				Err(err).
+				Msg("Failed to handle reconnect call check")
+		}
+	}()
 }
 
 // handleUnregister removes a client from the hub
