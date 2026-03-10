@@ -87,17 +87,39 @@ func (m *SessionManager) RefreshWebSocket(ctx context.Context, userID string) er
 	return nil
 }
 
-// ReleaseWebSocket releases the WebSocket slot for the user.
+// Lua script for conditional WebSocket slot release.
+// Only deletes the key if the value matches the expected server ID,
+// preventing a reconnected client's slot from being deleted by a stale unregister.
+var releaseWebSocketScript = redis.NewScript(`
+local current = redis.call('GET', KEYS[1])
+if current == ARGV[1] then
+    redis.call('DEL', KEYS[1])
+    return 1
+end
+return 0
+`)
+
+// ReleaseWebSocket releases the WebSocket slot for the user,
+// but only if the slot is still owned by the given server.
 // Called when the WebSocket connection is closed.
-func (m *SessionManager) ReleaseWebSocket(ctx context.Context, userID string) error {
+func (m *SessionManager) ReleaseWebSocket(ctx context.Context, userID, serverID string) error {
 	key := keyPrefixWsUser + userID
-	if err := m.client.rdb.Del(ctx, key).Err(); err != nil {
+	result, err := releaseWebSocketScript.Run(ctx, m.client.rdb, []string{key}, serverID).Int()
+	if err != nil {
 		return fmt.Errorf("release websocket: %w", err)
 	}
 
-	m.client.logger.Debug().
-		Str("user_id", userID).
-		Msg("WebSocket slot released")
+	if result == 1 {
+		m.client.logger.Debug().
+			Str("user_id", userID).
+			Str("server_id", serverID).
+			Msg("WebSocket slot released")
+	} else {
+		m.client.logger.Debug().
+			Str("user_id", userID).
+			Str("server_id", serverID).
+			Msg("WebSocket slot not released (owned by different server or already gone)")
+	}
 
 	return nil
 }

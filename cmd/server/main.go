@@ -81,11 +81,12 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:         ":" + cfg.Port,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:    ":" + cfg.Port,
+		Handler: mux,
+		// NOTE: ReadTimeout and WriteTimeout are intentionally NOT set.
+		// They apply deadlines to the underlying net.Conn BEFORE the handler runs,
+		// which interferes with long-lived WebSocket connections after hijack.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// Start server in background

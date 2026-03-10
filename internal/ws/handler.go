@@ -182,8 +182,8 @@ func (h *Hub) handleUnregister(client *Client) {
 			Msg("Failed to unsubscribe from pub/sub")
 	}
 
-	// Release WebSocket slot in Redis
-	if err := h.sessions.ReleaseWebSocket(h.ctx, client.userID); err != nil {
+	// Release WebSocket slot in Redis (only if still owned by this server)
+	if err := h.sessions.ReleaseWebSocket(h.ctx, client.userID, h.serverID); err != nil {
 		h.logger.Error().
 			Str("user_id", client.userID).
 			Err(err).
@@ -331,7 +331,7 @@ func (h *Hub) HandleUpgrade(w http.ResponseWriter, r *http.Request) {
 			Err(err).
 			Msg("WebSocket upgrade: upgrade failed")
 		// Release the slot we acquired
-		_ = h.sessions.ReleaseWebSocket(r.Context(), userInfo.UserID)
+		_ = h.sessions.ReleaseWebSocket(r.Context(), userInfo.UserID, h.serverID)
 		return
 	}
 
