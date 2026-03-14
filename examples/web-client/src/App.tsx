@@ -44,6 +44,11 @@ function App() {
     setConnected(false);
   };
 
+  const handleWsDisconnected = () => {
+    setConnected(false);
+    clientRef.current = null;
+  };
+
   return (
     <div className="app">
       <header className="app-header">
@@ -102,7 +107,7 @@ function App() {
               </button>
             </div>
 
-            {clientRef.current && <CallUI client={clientRef.current} />}
+            {clientRef.current && <CallUI client={clientRef.current} onDisconnected={handleWsDisconnected} />}
           </div>
         )}
       </main>

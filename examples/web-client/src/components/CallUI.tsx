@@ -4,6 +4,7 @@ import './CallUI.css';
 
 interface CallUIProps {
   client: SignalingClient;
+  onDisconnected?: () => void;
 }
 
 interface IncomingCall {
@@ -12,7 +13,7 @@ interface IncomingCall {
   callerInfo?: UserInfo;
 }
 
-export function CallUI({ client }: CallUIProps) {
+export function CallUI({ client, onDisconnected }: CallUIProps) {
   const [state, setState] = useState<CallState>('idle');
   const [calleeId, setCalleeId] = useState('');
   const [incomingCall, setIncomingCall] = useState<IncomingCall | null>(null);
@@ -52,7 +53,8 @@ export function CallUI({ client }: CallUIProps) {
       onError: (code, message) => {
         setError(`${code}: ${message}`);
         setTimeout(() => setError(null), 5000);
-      }
+      },
+      onDisconnected,
     });
 
     return () => {

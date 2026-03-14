@@ -10,9 +10,11 @@ export interface UserInfo {
 export interface SignalingEvents {
   onStateChange?: (state: CallState) => void;
   onIncomingCall?: (callerId: string, sessionId: string, callerInfo?: UserInfo) => void;
+  onCallRinging?: (sessionId: string, calleeId: string) => void;
   onCallAccepted?: (sessionId: string, calleeInfo?: UserInfo) => void;
   onCallRejected?: (sessionId: string, calleeInfo?: UserInfo) => void;
   onCallEnded?: (reason: string, peerInfo?: UserInfo) => void;
+  onCallCheckResult?: (sessionId: string, exists: boolean, state?: string, callerId?: string) => void;
   onRemoteStream?: (stream: MediaStream) => void;
   onError?: (code: string, message: string) => void;
   onConnected?: () => void;
@@ -86,6 +88,15 @@ export class SignalingClient {
 
   private handleMessage(msg: { type: string; payload: Record<string, unknown> }) {
     switch (msg.type) {
+      case 'call.ringing':
+        // Server confirms call started; store session ID so the caller can cancel
+        this.sessionId = msg.payload.session_id as string;
+        this.events.onCallRinging?.(
+          msg.payload.session_id as string,
+          msg.payload.callee_id as string
+        );
+        break;
+
       case 'call.ring':
         this.sessionId = msg.payload.session_id as string;
         this.setState('ringing');
@@ -145,13 +156,22 @@ export class SignalingClient {
         );
         break;
 
+      case 'call.check_result':
+        this.events.onCallCheckResult?.(
+          msg.payload.session_id as string,
+          msg.payload.exists as boolean,
+          msg.payload.state as string | undefined,
+          msg.payload.caller_id as string | undefined
+        );
+        break;
+
       case 'error':
         this.events.onError?.(
           msg.payload.code as string,
           msg.payload.message as string
         );
         // Reset state on certain errors
-        if (['user_offline', 'user_busy', 'session_not_found'].includes(msg.payload.code as string)) {
+        if (['user_offline', 'user_busy', 'session_not_found', 'invalid_state'].includes(msg.payload.code as string)) {
           this.setState('idle');
           this.sessionId = null;
         }
@@ -175,6 +195,10 @@ export class SignalingClient {
     this.send('call.reject', { session_id: sessionId });
     this.setState('idle');
     this.sessionId = null;
+  }
+
+  checkCall(sessionId: string) {
+    this.send('call.check', { session_id: sessionId });
   }
 
   endCall() {
